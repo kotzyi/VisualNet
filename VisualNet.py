@@ -54,19 +54,10 @@ class VisualNet(nn.Module):
 			nn.ReLU(True),
 			nn.Dropout(),
 		)
-		self.landmark_vis_1 = nn.Linear(4096,2)
-		self.landmark_vis_2 = nn.Linear(4096,2)
-		self.landmark_vis_3 = nn.Linear(4096,2)
-		self.landmark_vis_4 = nn.Linear(4096,2)
-		self.landmark_vis_5 = nn.Linear(4096,2)
-		self.landmark_vis_6 = nn.Linear(4096,2)
-		self.landmark_vis_7 = nn.Linear(4096,2)
-		self.landmark_vis_8 = nn.Linear(4096,2)
-
-		self.landmark_loc_1 = nn.Linear(4096,4)
-		self.landmark_loc_2 = nn.Linear(4096,4)
-		self.landmark_loc_3 = nn.Linear(4096,4)
-		self.landmark_loc_4 = nn.Linear(4096,4)
+		self.landmark_collar = nn.Linear(4096,10)
+		self.landmark_sleeve = nn.Linear(4096,10)
+		self.landmark_waistline = nn.Linear(4096,10)
+		self.landmark_hem = nn.Linear(4096,10)
 		
 		self._initialize_weights()
 
@@ -75,20 +66,12 @@ class VisualNet(nn.Module):
 		l = self.conv5_pose(feature) 
 		l = l.view(l.size(0), -1)
 		l = self.fc6_7(l)
-		v1 = self.landmark_vis_1(l)
-		v2 = self.landmark_vis_2(l)
-		v3 = self.landmark_vis_3(l)
-		v4 = self.landmark_vis_4(l)
-		v5 = self.landmark_vis_5(l)
-		v6 = self.landmark_vis_6(l)
-		v7 = self.landmark_vis_7(l)
-		v8 = self.landmark_vis_8(l)
+		collar = self.landmark_collar(l)
+		sleeve = self.landmark_sleeve(l)
+		waistline = self.landmark_waistline(l)
+		hem = self.landmark_hem(l)
 
-		l1 = self.landmark_loc_1(l)
-		l2 = self.landmark_loc_2(l)
-		l3 = self.landmark_loc_3(l)
-		l4 = self.landmark_loc_4(l)
-		return v1,v2,v3,v4,v5,v6,v7,v8,l1,l2,l3,l4
+		return collar,sleeve,waistline,hem
 
 	def _initialize_weights(self):
 		for m in self.modules():

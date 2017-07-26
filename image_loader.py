@@ -7,6 +7,7 @@ import re
 from glob import glob
 import pandas
 from pandas import Series, DataFrame
+import numpy as np
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -29,15 +30,13 @@ class ImageFolder(data.Dataset):
 		self.target_transform = target_transform
 		self.loader = loader
 
-		self.image_path = data_frame['image_name'].values
-		self.clothes_type = data_frame['clothes_type'].values
+		self.image_path = data_frame['image_name'].values.tolist()
+		self.clothes_type = data_frame['clothes_type'].values.tolist()
 		self.data_vis_loc = data_frame[[
-							'landmark_visibility_1','landmark_visibility_2','landmark_visibility_3','landmark_visibility_4',
-							'landmark_visibility_5','landmark_visibility_6','landmark_visibility_7','landmark_visibility_1',
-							'landmark_location_x_1','landmark_location_y_1','landmark_location_x_2','landmark_location_y_2',
-							'landmark_location_x_3','landmark_location_y_3','landmark_location_x_4','landmark_location_y_4',
-							'landmark_location_x_5','landmark_location_y_5','landmark_location_x_6','landmark_location_y_6',
-							'landmark_location_x_7','landmark_location_y_7','landmark_location_x_8','landmark_location_y_8',
+							'landmark_visibility_1','landmark_visibility_2','landmark_location_x_1','landmark_location_y_1','landmark_location_x_2','landmark_location_y_2',
+							'landmark_visibility_3','landmark_visibility_4','landmark_location_x_3','landmark_location_y_3','landmark_location_x_4','landmark_location_y_4',
+							'landmark_visibility_5','landmark_visibility_6','landmark_location_x_5','landmark_location_y_5','landmark_location_x_6','landmark_location_y_6',
+							'landmark_visibility_7','landmark_visibility_8','landmark_location_x_7','landmark_location_y_7','landmark_location_x_8','landmark_location_y_8',
 		]].values
 
 	def __getitem__(self, index):
@@ -45,9 +44,27 @@ class ImageFolder(data.Dataset):
 		clothes_type = self.clothes_type[index]
 		target = self.data_vis_loc[index]
 		img = self.loader(self.root + path)
+		empty = np.array([-1.0,-1.0,-1.0,-1.0,-1.0,-1.0])
+
+		if clothes_type == 1:
+			collar = target[0:6]
+			sleeve = target[6:12]
+			hem = target[12:18]
+			waistline = empty
+		elif clothes_type == 2:
+			waistline = target[0:6]
+			hem = target[6:12]
+			collar = empty
+			sleeve = empty
+		else:
+			collar = target[0:6]
+			sleeve = target[6:12]
+			waistline = target[12:18]
+			hem = target[18:24]
+
 		if self.transform is not None:
 			img = self.transform(img)
-		return (img, ,clothes_type, target)
+		return (img, clothes_type, collar, sleeve, waistline, hem)
 
 	def __len__(self):
-		return len(self.data_path)
+		return len(self.image_path)
