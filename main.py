@@ -1,3 +1,7 @@
+'''To-Do
+0. Visual Loss와 Location Loss의 통합 필요. 현재는 노멀라이즈 되어있지 않기 때문에, Visual Loss가 손해보는 구조임.
+'''
+
 from __future__ import print_function
 import argparse
 import os
@@ -19,7 +23,7 @@ from pymongo import MongoClient
 import pandas as pd
 from pandas import Series, DataFrame
 from image_loader import ImageFolder
-from VisualNet import vsnet
+from PoseNet import posenet
 import math
 
 # Training settings
@@ -27,7 +31,7 @@ parser = argparse.ArgumentParser(description='PyTorch Visual Shopping')
 parser.add_argument('data', metavar = 'DIR',help = 'path to dataset')
 parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
-parser.add_argument('--epochs', type=int, default=100, metavar='N',
+parser.add_argument('--epochs', type=int, default=150, metavar='N',
                     help='number of epochs to train (default: 100)')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N',
                     help='number of start epoch (default: 1)')
@@ -55,6 +59,8 @@ parser.add_argument('--save-db', action='store_true', default=False,
 					help='save inferencing result to mongodb')
 parser.add_argument('--print-freq', '-p', default=10, type=int,
 					metavar='N', help='print frequency (default: 10)')
+parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
+					help='evaluate model on validation set')
 
 best_acc = 0
 
@@ -72,12 +78,28 @@ def main():
 	else:
 		pin = False
 		print("CPU Mode")
-    
+	
+	model = posenet()
+	if args.cuda:
+		model = torch.nn.DataParallel(model).cuda()
+
+	# optionally resume from a checkpoint
+	if args.resume:
+		if os.path.isfile(args.resume):
+			print("=> loading checkpoint '{}'".format(args.resume))
+			checkpoint = torch.load(args.resume)
+			args.start_epoch = checkpoint['epoch']
+			#best_prec1 = checkpoint['best_prec1']
+			model.load_state_dict(checkpoint['state_dict'])
+			print("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
+		else:
+			print("=> no checkpoint found at '{}'".format(args.resume))
+
 	normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
 	#Annotation 로딩
 	#Landmark
-	landmark_dataframe = pd.read_table(data_path+"/Anno/list_landmarks_inshop.txt",sep="\s+")
+	landmark_dataframe = pd.read_table(data_path+"/Anno/list_landmarks_inshop_2.txt",sep="\s+")
 	
 	#이미지 로딩
 	image_data = torch.utils.data.DataLoader(
@@ -93,34 +115,93 @@ def main():
 		pin_memory = pin,
 	)
 	print("Complete Data loading(%s)" % len(image_data))
-	model = vsnet()
-	if args.cuda:
-		model = torch.nn.DataParallel(model).cuda()
 
 	softmax = nn.CrossEntropyLoss().cuda()
-	l2loss = nn.MSELoss().cuda()
+	l1loss = nn.L1Loss().cuda()
 	optimizer = torch.optim.Adagrad(model.parameters(), args.lr,weight_decay=args.weight_decay)
+
+	if args.evaluate:
+		validate(image_data, model, softmax,l1loss)
+		return
+
 
 	for epoch in range(args.start_epoch, args.epochs):
 		adjust_learning_rate(optimizer, epoch)
 		# train for one epoch
-		train(image_data, model, softmax, l2loss, optimizer, epoch)
+		train(image_data, model, softmax, l1loss, optimizer, epoch)
 		# evaluate on validation set
 		#prec1 = validate(val_loader, model, criterion)
 
 	    # remember best prec@1 and save checkpoint
-#		is_best = prec1 > best_prec1
-#		best_prec1 = max(prec1, best_prec1)
+		#		is_best = prec1 > best_prec1
+		#		best_prec1 = max(prec1, best_prec1)
 		save_checkpoint({
 			'epoch': epoch + 1,
 			'arch': 'vgg16', 
 			'state_dict': model.state_dict(),
-#'best_prec1': best_prec1,
-#}, is_best)
+		#'best_prec1': best_prec1,
+		#}, is_best)
 		},True)
 
+def validate(val_loader, model, softmax, l1loss):
+	batch_time = AverageMeter()
+	data_time = AverageMeter()
+	losses_v = AverageMeter()
+	losses_l = AverageMeter()
+	top1 = AverageMeter()
+	top5 = AverageMeter()
+	# switch to train mode
+    
+	model.eval()
+	end = time.time()
+	for i, (input, clothes_type, collar, sleeve, waistline, hem) in enumerate(val_loader):
+		# measure data loading time
+		data_time.update(time.time() - end)
+		input_var = Variable(input)
+		# compute output
+		collar_out, sleeve_out, waistline_out, hem_out = model(input_var)
+	    
+		# Answers
+		collar = Variable(collar).float().cuda(async=True)
+		sleeve = Variable(sleeve).float().cuda(async=True)
+		waistline = Variable(waistline).float().cuda(async=True)
+		hem = Variable(hem).float().cuda(async=True)
+	
+		hem_vis_loss = softmax(hem_out[:,0:3], hem[:,0].long()) + softmax(hem_out[:,3:6], hem[:,1].long())
+		hem_land_loss = l1loss(hem_out[:,6:8], hem[:,2:4]) + l1loss(hem_out[:,8:10], hem[:,4:6])
+	
+		collar_vis_loss = softmax(collar_out[:,0:3], collar[:,0].long()) + softmax(collar_out[:,3:6], collar[:,1].long())
+		collar_land_loss =l1loss(collar_out[:,6:8], collar[:,2:4]) + l1loss(collar_out[:,8:10], collar[:,4:6])
+	
+		sleeve_vis_loss = softmax(sleeve_out[:,0:3], sleeve[:,0].long()) + softmax(sleeve_out[:,3:6], sleeve[:,1].long())
+		sleeve_land_loss = l1loss(sleeve_out[:,6:8], sleeve[:,2:4]) + l1loss(sleeve_out[:,8:10], sleeve[:,4:6])
+	
+		waistline_vis_loss = softmax(waistline_out[:,0:3], waistline[:,0].long()) + softmax(waistline_out[:,3:6], waistline[:,1].long())
+		waistline_land_loss = l1loss(waistline_out[:,6:8], waistline[:,2:4]) + l1loss(waistline_out[:,8:10], waistline[:,4:6])
+	
+		vis_loss = hem_vis_loss + collar_vis_loss + sleeve_vis_loss + waistline_vis_loss
+		land_loss = hem_land_loss + collar_land_loss + sleeve_land_loss + waistline_land_loss
+		loss = land_loss + vis_loss
+		print("INPUT:")
+		print(sleeve)
+		print("OUTPUT:")
+		print(sleeve_out)
+		# measure accuracy and record loss
+		prec1, _ = accuracy(hem_out.data[:,0:3], hem.long().data[:,0].contiguous(), topk=(1, 1))
+		losses_v.update(vis_loss.data[0], input.size(0))
+		losses_l.update(land_loss.data[0], input.size(0))
+		top1.update(prec1[0], input.size(0))
 
-def train(train_loader, model, softmax, l2loss, optimizer, epoch):
+        # measure elapsed time
+		batch_time.update(time.time() - end)
+		end = time.time()
+		if i % args.print_freq == 0:
+			print('Test: [{0}/{1}]\t'
+				'Visibility Loss {loss_v.val:.4f} ({loss_v.avg:.4f})\t'
+				'Location Loss {loss_l.val:.4f} ({loss_l.avg:.4f})\t'
+				'Prec@1 {top1.val:.3f} ({top1.avg:.3f})'.format(i, len(val_loader), loss_v=losses_v, loss_l = losses_l, top1=top1))
+
+def train(train_loader, model, softmax, l1loss, optimizer, epoch):
 	'''
 	In clothes type, 
 	"1" represents upper-body clothes, 
@@ -149,51 +230,37 @@ def train(train_loader, model, softmax, l2loss, optimizer, epoch):
 		#target_var = Variable(target).float().cuda(async=True)
 		# compute output
 		collar_out, sleeve_out, waistline_out, hem_out = model(input_var)
-		
+
+		#		collar_indice = Variable(torch.LongTensor([idx for idx, x in enumerate(collar) if x == 1 or x == 3])).cuda()
+		#sleeve_indice = collar_indice
+		#waistline_indice = Variable(torch.LongTensor([idx for idx, x in enumerate(clothes_type) if x == 2 or x == 3])).cuda()
+	
+		# Answers
 		collar = Variable(collar).float().cuda(async=True)
 		sleeve = Variable(sleeve).float().cuda(async=True)
 		waistline = Variable(waistline).float().cuda(async=True)
 		hem = Variable(hem).float().cuda(async=True)
 
-		collar_indice = Variable(torch.LongTensor([idx for idx, x in enumerate(clothes_type) if x == 1 or x == 3])).cuda()
-		sleeve_indice = collar_indice
-		waistline_indice = Variable(torch.LongTensor([idx for idx, x in enumerate(clothes_type) if x == 2 or x == 3])).cuda()
-
 		hem_vis_loss = softmax(hem_out[:,0:3], hem[:,0].long()) + softmax(hem_out[:,3:6], hem[:,1].long())
-		hem_land_loss = l2loss(hem_out[:,6:8], hem[:,2:4]) + l2loss(hem_out[:,8:10], hem[:,4:6])
+		hem_land_loss = l1loss(hem_out[:,6:8], hem[:,2:4]) + l1loss(hem_out[:,8:10], hem[:,4:6])
 
-		vis_loss = hem_vis_loss
-		land_loss = hem_land_loss
+		collar_vis_loss = softmax(collar_out[:,0:3], collar[:,0].long()) + softmax(collar_out[:,3:6], collar[:,1].long())
+		collar_land_loss =l1loss(collar_out[:,6:8], collar[:,2:4]) + l1loss(collar_out[:,8:10], collar[:,4:6])
 
-		if collar_indice:
-			collar = torch.index_select(collar, 0, collar_indice)
-			collar_out = torch.index_select(collar_out, 0, collar_indice)
-			collar_vis_loss = softmax(collar_out[:,0:3], collar[:,0].long()) + softmax(collar_out[:,3:6], collar[:,1].long())
-			collar_land_loss =l2loss(collar_out[:,6:8], collar[:,2:4]) + l2loss(collar_out[:,8:10], collar[:,4:6])
-			vis_loss = vis_loss + collar_vis_loss
-			land_loss = land_loss + collar_land_loss
+		sleeve_vis_loss = softmax(sleeve_out[:,0:3], sleeve[:,0].long()) + softmax(sleeve_out[:,3:6], sleeve[:,1].long())
+		sleeve_land_loss = l1loss(sleeve_out[:,6:8], sleeve[:,2:4]) + l1loss(sleeve_out[:,8:10], sleeve[:,4:6])
 
-		if sleeve_indice:
-			sleeve = torch.index_select(sleeve, 0, sleeve_indice)
-			sleeve_out = torch.index_select(sleeve_out, 0, sleeve_indice)
-			sleeve_vis_loss = softmax(sleeve_out[:,0:3], sleeve[:,0].long()) + softmax(sleeve_out[:,3:6], sleeve[:,1].long())
-			sleeve_land_loss = l2loss(sleeve_out[:,6:8], sleeve[:,2:4]) + l2loss(sleeve_out[:,8:10], sleeve[:,4:6])
-			vis_loss = vis_loss + sleeve_vis_loss
-			land_loss = land_loss + sleeve_land_loss
-
-		if waistline_indice:
-			waistline = torch.index_select(waistline, 0, waistline_indice)
-			waistline_out = torch.index_select(waistline_out, 0, waistline_indice)
-			waistline_vis_loss = softmax(waistline_out[:,0:3], waistline[:,0].long()) + softmax(waistline_out[:,3:6], waistline[:,1].long())
-			waistline_land_loss = l2loss(waistline_out[:,6:8], waistline[:,2:4]) + l2loss(waistline_out[:,8:10], waistline[:,4:6])
-			vis_loss = vis_loss + waistline_vis_loss
-			land_loss = land_loss + waistline_land_loss
-		loss = vis_loss + land_loss
+		waistline_vis_loss = softmax(waistline_out[:,0:3], waistline[:,0].long()) + softmax(waistline_out[:,3:6], waistline[:,1].long())
+		waistline_land_loss = l1loss(waistline_out[:,6:8], waistline[:,2:4]) + l1loss(waistline_out[:,8:10], waistline[:,4:6])
+		
+		vis_loss = hem_vis_loss + collar_vis_loss + sleeve_vis_loss + waistline_vis_loss
+		land_loss = hem_land_loss + collar_land_loss + sleeve_land_loss + waistline_land_loss
+		loss = land_loss + vis_loss
 		# measure accuracy and record loss
-		#prec1, prec5 = accuracy(output.data, target, topk=(1, 1))
+		prec1, _ = accuracy(hem_out.data[:,0:3], hem.long().data[:,0].contiguous(), topk=(1, 1))
 		losses_v.update(vis_loss.data[0], input.size(0))
 		losses_l.update(land_loss.data[0], input.size(0))
-		#top1.update(prec1[0], input.size(0))
+		top1.update(prec1[0], input.size(0))
 		#top5.update(prec5[0], input.size(0))
 
 	    # compute gradient and do SGD step
