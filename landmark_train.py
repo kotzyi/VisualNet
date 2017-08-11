@@ -1,5 +1,7 @@
 '''To-Do
 0. Visual Loss와 Location Loss의 통합 필요. 현재는 노멀라이즈 되어있지 않기 때문에, Visual Loss가 손해보는 구조임.
+1. Triplet Loss 구성하기위한 새로운 네트워크 개발 필요 
+2. 실제 triplet을 구하기 위한 새로우 main 개발 필요
 '''
 
 from __future__ import print_function
@@ -22,8 +24,8 @@ import pymongo
 from pymongo import MongoClient
 import pandas as pd
 from pandas import Series, DataFrame
-from image_loader import ImageFolder
-from PoseNet import posenet
+from landmark_loader import ImageFolder
+from LandmarkNet import landmarknet
 import math
 
 # Training settings
@@ -35,8 +37,8 @@ parser.add_argument('--epochs', type=int, default=150, metavar='N',
                     help='number of epochs to train (default: 100)')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N',
                     help='number of start epoch (default: 1)')
-parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
-                    help='learning rate (default: 0.001)')
+parser.add_argument('--lr', type=float, default=0.002, metavar='LR',
+                    help='learning rate (default: 0.002)')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
@@ -51,10 +53,6 @@ parser.add_argument('--workers', type = int, default = 8, metavar = 'N',
 					help='number of works for data londing')
 parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,	metavar='W', 
 					help='weight decay (default: 1e-4)')
-parser.add_argument('--anchor', default='', type=str,
-					help='path to anchor image folder')
-parser.add_argument('--feature-size', default=1000, type=int,
-					help='fully connected layer size')
 parser.add_argument('--save-db', action='store_true', default=False, 
 					help='save inferencing result to mongodb')
 parser.add_argument('--print-freq', '-p', default=10, type=int,
@@ -79,7 +77,7 @@ def main():
 		pin = False
 		print("CPU Mode")
 	
-	model = posenet()
+	model = landmarknet()
 	if args.cuda:
 		model = torch.nn.DataParallel(model).cuda()
 
@@ -97,13 +95,21 @@ def main():
 
 	normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
-	#Annotation 로딩
-	#Landmark
-	landmark_dataframe = pd.read_table(data_path+"/Anno/list_landmarks_inshop_2.txt",sep="\s+")
-	
 	#이미지 로딩
 	image_data = torch.utils.data.DataLoader(
-		ImageFolder(data_path,landmark_dataframe,transforms.Compose([
+		ImageFolder(data_path,transforms.Compose([
+			transforms.Scale(224),
+			transforms.CenterCrop(224),
+			transforms.ToTensor(),
+			normalize,
+		])),
+		batch_size = args.batch_size,
+		shuffle = True,
+		num_workers = args.workers, 
+		pin_memory = pin,
+	)
+	val_data = torch.utils.data.DataLoader(
+		ImageFolder("/data/deep-fashion/in-shop/",transforms.Compose([
 			transforms.Scale(224),
 			transforms.CenterCrop(224),
 			transforms.ToTensor(),
@@ -111,14 +117,16 @@ def main():
 		])),
 		batch_size = args.batch_size,
 		shuffle = False,
-		num_workers = args.workers, 
+		num_workers = args.workers,
 		pin_memory = pin,
 	)
+
 	print("Complete Data loading(%s)" % len(image_data))
 
 	softmax = nn.CrossEntropyLoss().cuda()
 	l1loss = nn.L1Loss().cuda()
-	optimizer = torch.optim.Adagrad(model.parameters(), args.lr,weight_decay=args.weight_decay)
+	params = filter(lambda p: p.requires_grad, model.parameters())
+	optimizer = torch.optim.Adagrad(params, args.lr,weight_decay=args.weight_decay)
 
 	if args.evaluate:
 		validate(image_data, model, softmax,l1loss)
@@ -130,7 +138,7 @@ def main():
 		# train for one epoch
 		train(image_data, model, softmax, l1loss, optimizer, epoch)
 		# evaluate on validation set
-		#prec1 = validate(val_loader, model, criterion)
+		#validate(val_data, model, softmax,l1loss)
 
 	    # remember best prec@1 and save checkpoint
 		#		is_best = prec1 > best_prec1
@@ -154,43 +162,41 @@ def validate(val_loader, model, softmax, l1loss):
     
 	model.eval()
 	end = time.time()
-	for i, (input, clothes_type, collar, sleeve, waistline, hem) in enumerate(val_loader):
+	for i, (input, clothes_type, collar, sleeve, waistline, hem, path) in enumerate(val_loader):
 		# measure data loading time
 		data_time.update(time.time() - end)
 		input_var = Variable(input)
 		# compute output
-		collar_out, sleeve_out, waistline_out, hem_out = model(input_var)
-	    
-		# Answers
+		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, _ = model(input_var)
+
+	    # Answers
 		collar = Variable(collar).float().cuda(async=True)
 		sleeve = Variable(sleeve).float().cuda(async=True)
 		waistline = Variable(waistline).float().cuda(async=True)
 		hem = Variable(hem).float().cuda(async=True)
-	
-		hem_vis_loss = softmax(hem_out[:,0:3], hem[:,0].long()) + softmax(hem_out[:,3:6], hem[:,1].long())
-		hem_land_loss = l1loss(hem_out[:,6:8], hem[:,2:4]) + l1loss(hem_out[:,8:10], hem[:,4:6])
-	
-		collar_vis_loss = softmax(collar_out[:,0:3], collar[:,0].long()) + softmax(collar_out[:,3:6], collar[:,1].long())
-		collar_land_loss =l1loss(collar_out[:,6:8], collar[:,2:4]) + l1loss(collar_out[:,8:10], collar[:,4:6])
-	
-		sleeve_vis_loss = softmax(sleeve_out[:,0:3], sleeve[:,0].long()) + softmax(sleeve_out[:,3:6], sleeve[:,1].long())
-		sleeve_land_loss = l1loss(sleeve_out[:,6:8], sleeve[:,2:4]) + l1loss(sleeve_out[:,8:10], sleeve[:,4:6])
-	
-		waistline_vis_loss = softmax(waistline_out[:,0:3], waistline[:,0].long()) + softmax(waistline_out[:,3:6], waistline[:,1].long())
-		waistline_land_loss = l1loss(waistline_out[:,6:8], waistline[:,2:4]) + l1loss(waistline_out[:,8:10], waistline[:,4:6])
-	
+
+		hem_vis_loss = softmax(vis_hem[:,0:3], hem[:,0].long()) + softmax(vis_hem[:,3:6], hem[:,1].long())
+		hem_land_loss = l1loss(hem_out[:,0:2], hem[:,2:4]) + l1loss(hem_out[:,2:4], hem[:,4:6])
+
+		collar_vis_loss = softmax(vis_collar[:,0:3], collar[:,0].long()) + softmax(vis_collar[:,3:6], collar[:,1].long())
+		collar_land_loss =l1loss(collar_out[:,0:2], collar[:,2:4]) + l1loss(collar_out[:,2:4], collar[:,4:6])
+
+		sleeve_vis_loss = softmax(vis_sleeve[:,0:3], sleeve[:,0].long()) + softmax(vis_sleeve[:,3:6], sleeve[:,1].long())
+		sleeve_land_loss = l1loss(sleeve_out[:,0:2], sleeve[:,2:4]) + l1loss(sleeve_out[:,2:4], sleeve[:,4:6])
+
+		waistline_vis_loss = softmax(vis_waistline[:,0:3], waistline[:,0].long()) + softmax(vis_waistline[:,3:6], waistline[:,1].long())
+		waistline_land_loss = l1loss(waistline_out[:,0:2], waistline[:,2:4]) + l1loss(waistline_out[:,2:4], waistline[:,4:6])
+
 		vis_loss = hem_vis_loss + collar_vis_loss + sleeve_vis_loss + waistline_vis_loss
 		land_loss = hem_land_loss + collar_land_loss + sleeve_land_loss + waistline_land_loss
 		loss = land_loss + vis_loss
-		print("INPUT:")
-		print(sleeve)
-		print("OUTPUT:")
-		print(sleeve_out)
+		
 		# measure accuracy and record loss
-		prec1, _ = accuracy(hem_out.data[:,0:3], hem.long().data[:,0].contiguous(), topk=(1, 1))
+		prec1, _ = accuracy(vis_hem.data[:,0:3], hem.long().data[:,0].contiguous(), topk=(1, 1))
 		losses_v.update(vis_loss.data[0], input.size(0))
 		losses_l.update(land_loss.data[0], input.size(0))
 		top1.update(prec1[0], input.size(0))
+		#top5.update(prec5[0], input.size(0))
 
         # measure elapsed time
 		batch_time.update(time.time() - end)
@@ -223,17 +229,16 @@ def train(train_loader, model, softmax, l1loss, optimizer, epoch):
 	# switch to train mode
 	model.train()
 	end = time.time()
-	for i, (input, clothes_type, collar, sleeve, waistline, hem) in enumerate(train_loader):
+	for i, (input, clothes_type, collar, sleeve, waistline, hem, path) in enumerate(train_loader):
 		# measure data loading time
 		data_time.update(time.time() - end)
 		input_var = Variable(input)
-		#target_var = Variable(target).float().cuda(async=True)
+	
+		#for name,m in model.named_modules():
+		#	if name in ['module.features.28']:
+		#		print(m.weight)
 		# compute output
-		collar_out, sleeve_out, waistline_out, hem_out = model(input_var)
-
-		#		collar_indice = Variable(torch.LongTensor([idx for idx, x in enumerate(collar) if x == 1 or x == 3])).cuda()
-		#sleeve_indice = collar_indice
-		#waistline_indice = Variable(torch.LongTensor([idx for idx, x in enumerate(clothes_type) if x == 2 or x == 3])).cuda()
+		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, _ = model(input_var)
 	
 		# Answers
 		collar = Variable(collar).float().cuda(async=True)
@@ -241,23 +246,23 @@ def train(train_loader, model, softmax, l1loss, optimizer, epoch):
 		waistline = Variable(waistline).float().cuda(async=True)
 		hem = Variable(hem).float().cuda(async=True)
 
-		hem_vis_loss = softmax(hem_out[:,0:3], hem[:,0].long()) + softmax(hem_out[:,3:6], hem[:,1].long())
-		hem_land_loss = l1loss(hem_out[:,6:8], hem[:,2:4]) + l1loss(hem_out[:,8:10], hem[:,4:6])
+		hem_vis_loss = softmax(vis_hem[:,0:3], hem[:,0].long()) + softmax(vis_hem[:,3:6], hem[:,1].long())
+		hem_land_loss = l1loss(hem_out[:,0:2], hem[:,2:4]) + l1loss(hem_out[:,2:4], hem[:,4:6])
 
-		collar_vis_loss = softmax(collar_out[:,0:3], collar[:,0].long()) + softmax(collar_out[:,3:6], collar[:,1].long())
-		collar_land_loss =l1loss(collar_out[:,6:8], collar[:,2:4]) + l1loss(collar_out[:,8:10], collar[:,4:6])
+		collar_vis_loss = softmax(vis_collar[:,0:3], collar[:,0].long()) + softmax(vis_collar[:,3:6], collar[:,1].long())
+		collar_land_loss =l1loss(collar_out[:,0:2], collar[:,2:4]) + l1loss(collar_out[:,2:4], collar[:,4:6])
 
-		sleeve_vis_loss = softmax(sleeve_out[:,0:3], sleeve[:,0].long()) + softmax(sleeve_out[:,3:6], sleeve[:,1].long())
-		sleeve_land_loss = l1loss(sleeve_out[:,6:8], sleeve[:,2:4]) + l1loss(sleeve_out[:,8:10], sleeve[:,4:6])
+		sleeve_vis_loss = softmax(vis_sleeve[:,0:3], sleeve[:,0].long()) + softmax(vis_sleeve[:,3:6], sleeve[:,1].long())
+		sleeve_land_loss = l1loss(sleeve_out[:,0:2], sleeve[:,2:4]) + l1loss(sleeve_out[:,2:4], sleeve[:,4:6])
 
-		waistline_vis_loss = softmax(waistline_out[:,0:3], waistline[:,0].long()) + softmax(waistline_out[:,3:6], waistline[:,1].long())
-		waistline_land_loss = l1loss(waistline_out[:,6:8], waistline[:,2:4]) + l1loss(waistline_out[:,8:10], waistline[:,4:6])
+		waistline_vis_loss = softmax(vis_waistline[:,0:3], waistline[:,0].long()) + softmax(vis_waistline[:,3:6], waistline[:,1].long())
+		waistline_land_loss = l1loss(waistline_out[:,0:2], waistline[:,2:4]) + l1loss(waistline_out[:,2:4], waistline[:,4:6])
 		
 		vis_loss = hem_vis_loss + collar_vis_loss + sleeve_vis_loss + waistline_vis_loss
 		land_loss = hem_land_loss + collar_land_loss + sleeve_land_loss + waistline_land_loss
 		loss = land_loss + vis_loss
 		# measure accuracy and record loss
-		prec1, _ = accuracy(hem_out.data[:,0:3], hem.long().data[:,0].contiguous(), topk=(1, 1))
+		prec1, _ = accuracy(vis_hem.data[:,0:3], hem.long().data[:,0].contiguous(), topk=(1, 1))
 		losses_v.update(vis_loss.data[0], input.size(0))
 		losses_l.update(land_loss.data[0], input.size(0))
 		top1.update(prec1[0], input.size(0))
@@ -320,7 +325,7 @@ class AverageMeter(object):
 
 def adjust_learning_rate(optimizer, epoch):
 	"""Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-	lr = args.lr * (0.1 ** (epoch // 15))
+	lr = args.lr * (0.9 ** (epoch // 15))
 	for param_group in optimizer.param_groups:
 		param_group['lr'] = lr
 
