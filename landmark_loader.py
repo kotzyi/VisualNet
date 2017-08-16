@@ -9,7 +9,8 @@ import pandas as pd
 from pandas import Series, DataFrame
 import numpy as np
 
-image_size = 256
+#image_size = 256
+empty_value = -0.1
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -32,7 +33,7 @@ class ImageFolder(data.Dataset):
 		self.target_transform = target_transform
 		self.loader = loader
 
-		self.data_frame = pd.read_table(root+"/Anno/list_landmarks.txt",sep="\s+")
+		self.data_frame = pd.read_table(root+"/Anno/list_landmarks_2.txt",sep="\s+")
 
 		self.image_path = self.data_frame['image_name'].values.tolist()
 		self.clothes_type = self.data_frame['clothes_type'].values.tolist()
@@ -46,13 +47,15 @@ class ImageFolder(data.Dataset):
 		self.image_size = [Image.open(self.root+path).size for path in self.image_path]
 		
 		# Normalization of coords
+		
 		for i in [2,4,8,10,14,16,20,22]:
 			self.data_vis_loc[:,i] = (np.array(self.data_vis_loc)[:,i]/np.array(self.image_size)[:,0]).tolist()
-			self.data_vis_loc[:,i] = [x if x > 0 else -1. for x in self.data_vis_loc[:,i]]
+			self.data_vis_loc[:,i] = [x if x > 0 else -0.1 for x in self.data_vis_loc[:,i]]
 
 		for i in [3,5,9,11,15,17,21,23]:
 			self.data_vis_loc[:,i] = (np.array(self.data_vis_loc)[:,i]/np.array(self.image_size)[:,1]).tolist()
-			self.data_vis_loc[:,i] = [x if x > 0 else -1. for x in self.data_vis_loc[:,i]]
+			self.data_vis_loc[:,i] = [x if x > 0 else -0.1 for x in self.data_vis_loc[:,i]]
+		
 
 	def __getitem__(self, index):
 		path = self.image_path[index]
@@ -60,8 +63,8 @@ class ImageFolder(data.Dataset):
 		target = self.data_vis_loc[index]
 		img = self.loader(self.root + path)
 		#수정필요 왜냐하면 0 1 2 로 맞춰서 없는 것으로 변환시켜야 함.
-		empty = np.array([2.,2.,-1.,-1.,-1.,-1.])
-		mask = np.array([-1.,-1.])
+		empty = np.array([2.,2.,empty_value,empty_value,empty_value,empty_value])
+		mask = np.array([empty_value,empty_value])
 		#vis = target[0:2] +target[6:8] + target[12:14] + target[18:20]
 		if clothes_type == 1:
 			collar = target[0:6]

@@ -42,7 +42,7 @@ class LandmarkNet(nn.Module):
 		self._initialize_weights()
 
 		# For Transfer Learning
-		self.features = vgg16.features #nn.Sequential(
+		self.features = vgg16.features
 		for param in self.features.parameters():
 			param.requires_grad = False
 
@@ -65,7 +65,7 @@ class LandmarkNet(nn.Module):
 		waistline = self.landmark_waistline(l)
 		hem = self.landmark_hem(l)
 
-		return vis_collar,vis_sleeve,vis_waistline,vis_hem,collar,sleeve,waistline,hem,feature
+		return vis_collar,vis_sleeve,vis_waistline,vis_hem,collar,sleeve,waistline,hem
 
 	def _initialize_weights(self):
 		for m in self.modules():

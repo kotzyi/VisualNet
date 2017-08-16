@@ -55,8 +55,8 @@ parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,	metavar=
 					help='weight decay (default: 1e-4)')
 parser.add_argument('--save-db', action='store_true', default=False, 
 					help='save inferencing result to mongodb')
-parser.add_argument('--print-freq', '-p', default=10, type=int,
-					metavar='N', help='print frequency (default: 10)')
+parser.add_argument('--print-freq', '-p', default=100, type=int,
+					metavar='N', help='print frequency (default: 100)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
 					help='evaluate model on validation set')
 
@@ -116,7 +116,7 @@ def main():
 			normalize,
 		])),
 		batch_size = args.batch_size,
-		shuffle = False,
+		shuffle = True,
 		num_workers = args.workers,
 		pin_memory = pin,
 	)
@@ -124,8 +124,10 @@ def main():
 	print("Complete Data loading(%s)" % len(image_data))
 
 	softmax = nn.CrossEntropyLoss().cuda()
-	l1loss = nn.L1Loss().cuda()
+	l1loss = nn.SmoothL1Loss().cuda()
+	#Convolution값 고정
 	params = filter(lambda p: p.requires_grad, model.parameters())
+	#params = model.parameters()
 	optimizer = torch.optim.Adagrad(params, args.lr,weight_decay=args.weight_decay)
 
 	if args.evaluate:
@@ -138,7 +140,7 @@ def main():
 		# train for one epoch
 		train(image_data, model, softmax, l1loss, optimizer, epoch)
 		# evaluate on validation set
-		#validate(val_data, model, softmax,l1loss)
+		validate(val_data, model, softmax,l1loss)
 
 	    # remember best prec@1 and save checkpoint
 		#		is_best = prec1 > best_prec1
@@ -167,7 +169,7 @@ def validate(val_loader, model, softmax, l1loss):
 		data_time.update(time.time() - end)
 		input_var = Variable(input)
 		# compute output
-		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, _ = model(input_var)
+		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out = model(input_var)
 
 	    # Answers
 		collar = Variable(collar).float().cuda(async=True)
@@ -188,9 +190,12 @@ def validate(val_loader, model, softmax, l1loss):
 		waistline_land_loss = l1loss(waistline_out[:,0:2], waistline[:,2:4]) + l1loss(waistline_out[:,2:4], waistline[:,4:6])
 
 		vis_loss = hem_vis_loss + collar_vis_loss + sleeve_vis_loss + waistline_vis_loss
-		land_loss = hem_land_loss + collar_land_loss + sleeve_land_loss + waistline_land_loss
+		land_loss = (hem_land_loss + collar_land_loss + sleeve_land_loss + waistline_land_loss)
 		loss = land_loss + vis_loss
-		
+
+		#print("IN: ",sleeve[0])
+		#print("OUT: ",sleeve_out[0])
+
 		# measure accuracy and record loss
 		prec1, _ = accuracy(vis_hem.data[:,0:3], hem.long().data[:,0].contiguous(), topk=(1, 1))
 		losses_v.update(vis_loss.data[0], input.size(0))
@@ -238,7 +243,7 @@ def train(train_loader, model, softmax, l1loss, optimizer, epoch):
 		#	if name in ['module.features.28']:
 		#		print(m.weight)
 		# compute output
-		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, _ = model(input_var)
+		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out = model(input_var)
 	
 		# Answers
 		collar = Variable(collar).float().cuda(async=True)
@@ -267,7 +272,8 @@ def train(train_loader, model, softmax, l1loss, optimizer, epoch):
 		losses_l.update(land_loss.data[0], input.size(0))
 		top1.update(prec1[0], input.size(0))
 		#top5.update(prec5[0], input.size(0))
-
+		#print("IN:",sleeve[0])
+		#print("OUT:",sleeve_out[0])
 	    # compute gradient and do SGD step
 		optimizer.zero_grad()
 		loss.backward()
@@ -325,7 +331,7 @@ class AverageMeter(object):
 
 def adjust_learning_rate(optimizer, epoch):
 	"""Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-	lr = args.lr * (0.9 ** (epoch // 15))
+	lr = args.lr * (0.9 ** (epoch // 20))
 	for param_group in optimizer.param_groups:
 		param_group['lr'] = lr
 
