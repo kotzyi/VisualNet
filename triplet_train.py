@@ -2,6 +2,7 @@
 0. Visual Loss와 Location Loss의 통합 필요. 현재는 노멀라이즈 되어있지 않기 때문에, Visual Loss가 손해보는 구조임.
 1. Triplet Loss 구성하기위한 새로운 네트워크 개발 필요 
 2. 실제 triplet을 구하기 위한 새로우 main 개발 필요
+3. triplet을 위한 학습 데이터 만들 것!
 '''
 
 from __future__ import print_function
@@ -20,16 +21,18 @@ import torch.backends.cudnn as cudnn
 import numpy as np
 import readline
 from glob import glob
-import pymongo
-from pymongo import MongoClient
 import pandas as pd
 from pandas import Series, DataFrame
 from landmark_loader import ImageFolder
 from LandmarkNet import landmarknet
+from VisualNet import visualnet
 import math
+import operator
 
+image_size = 256
+conv_size = 28
 # Training settings
-parser = argparse.ArgumentParser(description='Visual Search')
+parser = argparse.ArgumentParser(description='PyTorch Trainer for Triplet Loss of Rich Annotations')
 parser.add_argument('data', metavar = 'DIR',help = 'path to dataset')
 parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
@@ -37,14 +40,14 @@ parser.add_argument('--epochs', type=int, default=150, metavar='N',
                     help='number of epochs to train (default: 100)')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N',
                     help='number of start epoch (default: 1)')
-parser.add_argument('--lr', type=float, default=0.002, metavar='LR',
-                    help='learning rate (default: 0.002)')
+parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
+                    help='learning rate (default: 0.001)')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='enables CUDA training')
-parser.add_argument('--resume', default='', type=str,
-                    help='path to latest checkpoint (default: none)')
+parser.add_argument('--land-load', default='', type=str,
+                    help='path to latest checkpoint of posenet(default: none)')
 parser.add_argument('--name', default='Visual_Search', type=str,
                     help='name of experiment')
 parser.add_argument('--test', dest='test', action='store_true',
@@ -53,12 +56,18 @@ parser.add_argument('--workers', type = int, default = 8, metavar = 'N',
 					help='number of works for data londing')
 parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,	metavar='W', 
 					help='weight decay (default: 1e-4)')
+parser.add_argument('--anchor', default='', type=str,
+					help='path to anchor image folder')
+parser.add_argument('--feature-size', default=1000, type=int,
+					help='fully connected layer size')
 parser.add_argument('--save-db', action='store_true', default=False, 
 					help='save inferencing result to mongodb')
-parser.add_argument('--print-freq', '-p', default=100, type=int,
-					metavar='N', help='print frequency (default: 100)')
+parser.add_argument('--print-freq', '-p', default=10, type=int,
+					metavar='N', help='print frequency (default: 10)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
 					help='evaluate model on validation set')
+parser.add_argument('--resume', default='', type=str, 
+					help='path to latest checkpoint (default: none)')
 
 best_acc = 0
 
@@ -77,24 +86,26 @@ def main():
 		pin = False
 		print("CPU Mode")
 	
-	model = landmarknet()
+	land_model = landmarknet()
 	if args.cuda:
-		model = torch.nn.DataParallel(model).cuda()
+		land_model = torch.nn.DataParallel(land_model).cuda()
 
 	# optionally resume from a checkpoint
-	if args.resume:
-		if os.path.isfile(args.resume):
-			print("=> loading checkpoint '{}'".format(args.resume))
-			checkpoint = torch.load(args.resume)
+	if args.land_load:
+		if os.path.isfile(args.land_load):
+			print("=> loading checkpoint '{}'".format(args.land_load))
+			checkpoint = torch.load(args.land_load)
 			args.start_epoch = checkpoint['epoch']
 			#best_prec1 = checkpoint['best_prec1']
-			model.load_state_dict(checkpoint['state_dict'])
-			print("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
+			land_model.load_state_dict(checkpoint['state_dict'])
+			print("=> loaded checkpoint '{}' (epoch {})".format(args.land_load, checkpoint['epoch']))
 		else:
-			print("=> no checkpoint found at '{}'".format(args.resume))
+			print("=> no checkpoint found at '{}'".format(args.land_load))
 
 	normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
+	#Annotation 로딩
+	
 	#이미지 로딩
 	image_data = torch.utils.data.DataLoader(
 		ImageFolder(data_path,transforms.Compose([
@@ -108,30 +119,15 @@ def main():
 		num_workers = args.workers, 
 		pin_memory = pin,
 	)
-	val_data = torch.utils.data.DataLoader(
-		ImageFolder("/data/deep-fashion/in-shop/",transforms.Compose([
-			transforms.Scale(224),
-			transforms.CenterCrop(224),
-			transforms.ToTensor(),
-			normalize,
-		])),
-		batch_size = args.batch_size,
-		shuffle = True,
-		num_workers = args.workers,
-		pin_memory = pin,
-	)
-
 	print("Complete Data loading(%s)" % len(image_data))
 
 	softmax = nn.CrossEntropyLoss().cuda()
-	l1loss = nn.SmoothL1Loss().cuda()
-	#Convolution값 고정
-	params = filter(lambda p: p.requires_grad, model.parameters())
-	#params = model.parameters()
+	l1loss = nn.L1Loss().cuda()
+	params = filter(lambda p: p.requires_grad, land_model.parameters())
 	optimizer = torch.optim.Adagrad(params, args.lr,weight_decay=args.weight_decay)
 
 	if args.evaluate:
-		validate(val_data, model, softmax,l1loss)
+		validate(image_data, land_model, softmax,l1loss)
 		return
 
 
@@ -140,18 +136,18 @@ def main():
 		# train for one epoch
 		train(image_data, model, softmax, l1loss, optimizer, epoch)
 		# evaluate on validation set
-		#validate(val_data, model, softmax,l1loss)
+		#prec1 = validate(val_loader, model, criterion)
 
 	    # remember best prec@1 and save checkpoint
 		#		is_best = prec1 > best_prec1
 		#		best_prec1 = max(prec1, best_prec1)
 		save_checkpoint({
 			'epoch': epoch + 1,
-			'arch': 'vgg16', 
+			'arch': 'visualnet', 
 			'state_dict': model.state_dict(),
 		#'best_prec1': best_prec1,
 		#}, is_best)
-		},False)
+		},True)
 
 def validate(val_loader, model, softmax, l1loss):
 	batch_time = AverageMeter()
@@ -161,7 +157,6 @@ def validate(val_loader, model, softmax, l1loss):
 	top1 = AverageMeter()
 	top5 = AverageMeter()
 	# switch to train mode
-    
 	model.eval()
 	end = time.time()
 	for i, (input, clothes_type, collar, sleeve, waistline, hem, path) in enumerate(val_loader):
@@ -169,48 +164,14 @@ def validate(val_loader, model, softmax, l1loss):
 		data_time.update(time.time() - end)
 		input_var = Variable(input)
 		# compute output
-		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out,_ = model(input_var)
+		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, feature = model(input_var)
+		vis = vis_sleeve[:,0:3].data.cpu().numpy()
+		vis = [v.argmax(axis = 0) for v in vis]
+		for idx, flag in enumerate(vis):
+			if flag == 0 and sleeve_out[idx,0].data.cpu().numpy() > 0 and sleeve_out[idx,1].data.cpu().numpy() > 0:
+				f = get_ROI(sleeve_out[idx,0:2].data.cpu().numpy() / image_size * conv_size, feature)
+				print(f)
 
-	    # Answers
-		collar = Variable(collar).float().cuda(async=True)
-		sleeve = Variable(sleeve).float().cuda(async=True)
-		waistline = Variable(waistline).float().cuda(async=True)
-		hem = Variable(hem).float().cuda(async=True)
-
-		hem_vis_loss = softmax(vis_hem[:,0:3], hem[:,0].long()) + softmax(vis_hem[:,3:6], hem[:,1].long())
-		hem_land_loss = l1loss(hem_out[:,0:2], hem[:,2:4]) + l1loss(hem_out[:,2:4], hem[:,4:6])
-
-		collar_vis_loss = softmax(vis_collar[:,0:3], collar[:,0].long()) + softmax(vis_collar[:,3:6], collar[:,1].long())
-		collar_land_loss =l1loss(collar_out[:,0:2], collar[:,2:4]) + l1loss(collar_out[:,2:4], collar[:,4:6])
-
-		sleeve_vis_loss = softmax(vis_sleeve[:,0:3], sleeve[:,0].long()) + softmax(vis_sleeve[:,3:6], sleeve[:,1].long())
-		sleeve_land_loss = l1loss(sleeve_out[:,0:2], sleeve[:,2:4]) + l1loss(sleeve_out[:,2:4], sleeve[:,4:6])
-
-		waistline_vis_loss = softmax(vis_waistline[:,0:3], waistline[:,0].long()) + softmax(vis_waistline[:,3:6], waistline[:,1].long())
-		waistline_land_loss = l1loss(waistline_out[:,0:2], waistline[:,2:4]) + l1loss(waistline_out[:,2:4], waistline[:,4:6])
-
-		vis_loss = hem_vis_loss + collar_vis_loss + sleeve_vis_loss + waistline_vis_loss
-		land_loss = (hem_land_loss + collar_land_loss + sleeve_land_loss + waistline_land_loss)
-		loss = land_loss + vis_loss
-#print("PATH: ",path[0])
-#		print("IN: ",sleeve[0])
-#		print("OUT: ",sleeve_out[0])
-
-		# measure accuracy and record loss
-		prec1, _ = accuracy(vis_hem.data[:,0:3], hem.long().data[:,0].contiguous(), topk=(1, 1))
-		losses_v.update(vis_loss.data[0], input.size(0))
-		losses_l.update(land_loss.data[0], input.size(0))
-		top1.update(prec1[0], input.size(0))
-		#top5.update(prec5[0], input.size(0))
-
-        # measure elapsed time
-		batch_time.update(time.time() - end)
-		end = time.time()
-		if i % args.print_freq == 0:
-			print('Test: [{0}/{1}]\t'
-				'Visibility Loss {loss_v.val:.4f} ({loss_v.avg:.4f})\t'
-				'Location Loss {loss_l.val:.4f} ({loss_l.avg:.4f})\t'
-				'Prec@1 {top1.val:.3f} ({top1.avg:.3f})'.format(i, len(val_loader), loss_v=losses_v, loss_l = losses_l, top1=top1))
 
 def train(train_loader, model, softmax, l1loss, optimizer, epoch):
 	'''
@@ -234,16 +195,17 @@ def train(train_loader, model, softmax, l1loss, optimizer, epoch):
 	# switch to train mode
 	model.train()
 	end = time.time()
-	for i, (input, clothes_type, collar, sleeve, waistline, hem, path) in enumerate(train_loader):
+	for i, (input, clothes_type, collar, sleeve, waistline, hem) in enumerate(train_loader):
 		# measure data loading time
 		data_time.update(time.time() - end)
 		input_var = Variable(input)
-	
-		#for name,m in model.named_modules():
-		#	if name in ['module.features.28']:
-		#		print(m.weight)
+		#target_var = Variable(target).float().cuda(async=True)
 		# compute output
-		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out = model(input_var)
+		collar_out, sleeve_out, waistline_out, hem_out, _ = model(input_var)
+
+		#		collar_indice = Variable(torch.LongTensor([idx for idx, x in enumerate(collar) if x == 1 or x == 3])).cuda()
+		#sleeve_indice = collar_indice
+		#waistline_indice = Variable(torch.LongTensor([idx for idx, x in enumerate(clothes_type) if x == 2 or x == 3])).cuda()
 	
 		# Answers
 		collar = Variable(collar).float().cuda(async=True)
@@ -251,29 +213,28 @@ def train(train_loader, model, softmax, l1loss, optimizer, epoch):
 		waistline = Variable(waistline).float().cuda(async=True)
 		hem = Variable(hem).float().cuda(async=True)
 
-		hem_vis_loss = softmax(vis_hem[:,0:3], hem[:,0].long()) + softmax(vis_hem[:,3:6], hem[:,1].long())
-		hem_land_loss = l1loss(hem_out[:,0:2], hem[:,2:4]) + l1loss(hem_out[:,2:4], hem[:,4:6])
+		hem_vis_loss = softmax(hem_out[:,0:3], hem[:,0].long()) + softmax(hem_out[:,3:6], hem[:,1].long())
+		hem_land_loss = l1loss(hem_out[:,6:8], hem[:,2:4]) + l1loss(hem_out[:,8:10], hem[:,4:6])
 
-		collar_vis_loss = softmax(vis_collar[:,0:3], collar[:,0].long()) + softmax(vis_collar[:,3:6], collar[:,1].long())
-		collar_land_loss =l1loss(collar_out[:,0:2], collar[:,2:4]) + l1loss(collar_out[:,2:4], collar[:,4:6])
+		collar_vis_loss = softmax(collar_out[:,0:3], collar[:,0].long()) + softmax(collar_out[:,3:6], collar[:,1].long())
+		collar_land_loss =l1loss(collar_out[:,6:8], collar[:,2:4]) + l1loss(collar_out[:,8:10], collar[:,4:6])
 
-		sleeve_vis_loss = softmax(vis_sleeve[:,0:3], sleeve[:,0].long()) + softmax(vis_sleeve[:,3:6], sleeve[:,1].long())
-		sleeve_land_loss = l1loss(sleeve_out[:,0:2], sleeve[:,2:4]) + l1loss(sleeve_out[:,2:4], sleeve[:,4:6])
+		sleeve_vis_loss = softmax(sleeve_out[:,0:3], sleeve[:,0].long()) + softmax(sleeve_out[:,3:6], sleeve[:,1].long())
+		sleeve_land_loss = l1loss(sleeve_out[:,6:8], sleeve[:,2:4]) + l1loss(sleeve_out[:,8:10], sleeve[:,4:6])
 
-		waistline_vis_loss = softmax(vis_waistline[:,0:3], waistline[:,0].long()) + softmax(vis_waistline[:,3:6], waistline[:,1].long())
-		waistline_land_loss = l1loss(waistline_out[:,0:2], waistline[:,2:4]) + l1loss(waistline_out[:,2:4], waistline[:,4:6])
+		waistline_vis_loss = softmax(waistline_out[:,0:3], waistline[:,0].long()) + softmax(waistline_out[:,3:6], waistline[:,1].long())
+		waistline_land_loss = l1loss(waistline_out[:,6:8], waistline[:,2:4]) + l1loss(waistline_out[:,8:10], waistline[:,4:6])
 		
 		vis_loss = hem_vis_loss + collar_vis_loss + sleeve_vis_loss + waistline_vis_loss
 		land_loss = hem_land_loss + collar_land_loss + sleeve_land_loss + waistline_land_loss
 		loss = land_loss + vis_loss
 		# measure accuracy and record loss
-		prec1, _ = accuracy(vis_sleeve.data[:,0:3], sleeve.long().data[:,0].contiguous(), topk=(1, 1))
+		prec1, _ = accuracy(hem_out.data[:,0:3], hem.long().data[:,0].contiguous(), topk=(1, 1))
 		losses_v.update(vis_loss.data[0], input.size(0))
 		losses_l.update(land_loss.data[0], input.size(0))
 		top1.update(prec1[0], input.size(0))
 		#top5.update(prec5[0], input.size(0))
-		#print("IN:",sleeve[0])
-		#print("OUT:",sleeve_out[0])
+
 	    # compute gradient and do SGD step
 		optimizer.zero_grad()
 		loss.backward()
@@ -331,7 +292,7 @@ class AverageMeter(object):
 
 def adjust_learning_rate(optimizer, epoch):
 	"""Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-	lr = args.lr * (0.9 ** (epoch // 20))
+	lr = args.lr * (0.1 ** (epoch // 30))
 	for param_group in optimizer.param_groups:
 		param_group['lr'] = lr
 
@@ -347,6 +308,19 @@ def accuracy(output, target, topk=(1,)):
 		correct_k = correct[:k].view(-1).float().sum(0)
 		res.append(correct_k.mul_(100.0 / batch_size))
 	return res
+
+def get_ROI(coords,feature_map):
+	"""Get Region of Interest(Landmark) by using landmark coordinations"""
+	pad = nn.ReflectionPad2d(2)
+	f = pad(feature_map).data.cpu()
+	x = math.floor(coords[0].tolist())
+	y = math.floor(coords[1].tolist())
+	x_idx = torch.LongTensor([x+1,x+2,x+3,x+4])
+	y_idx = torch.LongTensor([y+1,y+2,y+3,y+4])
+	f = torch.index_select(f, 3, x_idx)
+	f = torch.index_select(f, 2, y_idx)
+	return f
+
 
 if __name__ == '__main__':
 	main()    

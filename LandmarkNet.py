@@ -9,6 +9,17 @@ class LandmarkNet(nn.Module):
 
 	def __init__(self, vgg16):
 		super(LandmarkNet, self).__init__()
+		self.conv5 = nn.Sequential(
+			nn.MaxPool2d(kernel_size=2, stride=2),
+			nn.Conv2d(512, 512, kernel_size=3, padding=1),
+			nn.ReLU(inplace=True),
+			nn.Conv2d(512, 512, kernel_size=3, padding=1),
+			nn.ReLU(inplace=True),
+			nn.Conv2d(512, 512, kernel_size=3, padding=1),
+			nn.ReLU(inplace=True),
+			nn.MaxPool2d(kernel_size=2, stride=2),
+		)
+
 		self.fc6 = nn.Sequential(
 			nn.Linear(7 * 7 * 512, 4096),
 			nn.ReLU(True),
@@ -42,14 +53,16 @@ class LandmarkNet(nn.Module):
 		self._initialize_weights()
 
 		# For Transfer Learning
-		self.features = vgg16.features
+		self.features = nn.Sequential(
+			*list(vgg16.features.children())[:23]
+		)
 		for param in self.features.parameters():
 			param.requires_grad = False
 
 	def forward(self, x):
 		feature = self.features(x)
-		#l = self.conv5(feature) 
-		l = feature.view(feature.size(0), -1)
+		l = self.conv5(feature) 
+		l = l.view(l.size(0), -1)
 		l = self.fc6(l)
 		l_vis = self.fc6_vis(l)
 		l1 = self.fc7(l)
@@ -65,7 +78,7 @@ class LandmarkNet(nn.Module):
 		waistline = self.landmark_waistline(l)
 		hem = self.landmark_hem(l)
 
-		return vis_collar,vis_sleeve,vis_waistline,vis_hem,collar,sleeve,waistline,hem
+		return vis_collar,vis_sleeve,vis_waistline,vis_hem,collar,sleeve,waistline,hem,feature
 
 	def _initialize_weights(self):
 		for m in self.modules():

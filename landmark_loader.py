@@ -10,7 +10,7 @@ from pandas import Series, DataFrame
 import numpy as np
 
 #image_size = 256
-empty_value = -0.1
+empty_value = -256
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -47,7 +47,7 @@ class ImageFolder(data.Dataset):
 		self.image_size = [Image.open(self.root+path).size for path in self.image_path]
 		
 		# Normalization of coords
-		
+		'''	
 		for i in [2,4,8,10,14,16,20,22]:
 			self.data_vis_loc[:,i] = (np.array(self.data_vis_loc)[:,i]/np.array(self.image_size)[:,0]).tolist()
 			self.data_vis_loc[:,i] = [x if x > 0 else -0.1 for x in self.data_vis_loc[:,i]]
@@ -55,7 +55,7 @@ class ImageFolder(data.Dataset):
 		for i in [3,5,9,11,15,17,21,23]:
 			self.data_vis_loc[:,i] = (np.array(self.data_vis_loc)[:,i]/np.array(self.image_size)[:,1]).tolist()
 			self.data_vis_loc[:,i] = [x if x > 0 else -0.1 for x in self.data_vis_loc[:,i]]
-		
+		'''
 
 	def __getitem__(self, index):
 		path = self.image_path[index]
