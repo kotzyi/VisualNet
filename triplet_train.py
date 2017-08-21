@@ -1,8 +1,5 @@
 '''To-Do
-0. Visual Loss와 Location Loss의 통합 필요. 현재는 노멀라이즈 되어있지 않기 때문에, Visual Loss가 손해보는 구조임.
-1. Triplet Loss 구성하기위한 새로운 네트워크 개발 필요 
-2. 실제 triplet을 구하기 위한 새로우 main 개발 필요
-3. triplet을 위한 학습 데이터 만들 것!
+0. 64x8x512x4x4 의 스택으로 이루어진 데이터 셋 만들 것
 '''
 
 from __future__ import print_function
@@ -26,6 +23,7 @@ from pandas import Series, DataFrame
 from landmark_loader import ImageFolder
 from LandmarkNet import landmarknet
 from VisualNet import visualnet
+from TripletNet import tripletnet
 import math
 import operator
 
@@ -87,8 +85,10 @@ def main():
 		print("CPU Mode")
 	
 	land_model = landmarknet()
+	visual_model = visualnet()
 	if args.cuda:
 		land_model = torch.nn.DataParallel(land_model).cuda()
+		visual_model = torch.nn.DataParallel(visual_model).cuda()
 
 	# optionally resume from a checkpoint
 	if args.land_load:
@@ -127,7 +127,7 @@ def main():
 	optimizer = torch.optim.Adagrad(params, args.lr,weight_decay=args.weight_decay)
 
 	if args.evaluate:
-		validate(image_data, land_model, softmax,l1loss)
+		validate(image_data, land_model, visual_model, softmax,l1loss)
 		return
 
 
@@ -149,7 +149,7 @@ def main():
 		#}, is_best)
 		},True)
 
-def validate(val_loader, model, softmax, l1loss):
+def validate(val_loader, land_model, visual_model, softmax, l1loss):
 	batch_time = AverageMeter()
 	data_time = AverageMeter()
 	losses_v = AverageMeter()
@@ -157,20 +157,24 @@ def validate(val_loader, model, softmax, l1loss):
 	top1 = AverageMeter()
 	top5 = AverageMeter()
 	# switch to train mode
-	model.eval()
+	land_model.eval()
+	visual_model.eval()
+
 	end = time.time()
 	for i, (input, clothes_type, collar, sleeve, waistline, hem, path) in enumerate(val_loader):
 		# measure data loading time
 		data_time.update(time.time() - end)
 		input_var = Variable(input)
 		# compute output
-		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, feature = model(input_var)
-		vis = vis_sleeve[:,0:3].data.cpu().numpy()
-		vis = [v.argmax(axis = 0) for v in vis]
-		for idx, flag in enumerate(vis):
-			if flag == 0 and sleeve_out[idx,0].data.cpu().numpy() > 0 and sleeve_out[idx,1].data.cpu().numpy() > 0:
-				f = get_ROI(sleeve_out[idx,0:2].data.cpu().numpy() / image_size * conv_size, feature)
-				print(f)
+		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, feature = land_model(input_var)
+
+		pool5_layer = gen_pool5_layer((vis_collar[:,0:3], vis_collar[:,3:6],vis_sleeve[:,0:3], vis_sleeve[:,3:6],
+					vis_waistline[:,0:3], vis_waistline[:,3:6],vis_hem[:,0:3], vis_hem[:,3:6]), 
+					(collar_out[:,0:2], collar_out[:,2:4], sleeve_out[:,0:2], sleeve_out[:,2:4],
+					 waistline_out[:,0:2], waistline_out[:,2:4], hem_out[:,0:2], hem_out[:,2:4]), feature)
+
+		score = visual_model(feature, pool5_layer)
+		print(score)
 
 
 def train(train_loader, model, softmax, l1loss, optimizer, epoch):
@@ -309,18 +313,53 @@ def accuracy(output, target, topk=(1,)):
 		res.append(correct_k.mul_(100.0 / batch_size))
 	return res
 
-def get_ROI(coords,feature_map):
+def get_ROI(coord,feature_map):
 	"""Get Region of Interest(Landmark) by using landmark coordinations"""
 	pad = nn.ReflectionPad2d(2)
-	f = pad(feature_map).data.cpu()
-	x = math.floor(coords[0].tolist())
-	y = math.floor(coords[1].tolist())
-	x_idx = torch.LongTensor([x+1,x+2,x+3,x+4])
-	y_idx = torch.LongTensor([y+1,y+2,y+3,y+4])
-	f = torch.index_select(f, 3, x_idx)
-	f = torch.index_select(f, 2, y_idx)
+	f = pad(feature_map)
+	x = math.floor(coord[0].tolist())
+	y = math.floor(coord[1].tolist())
+	
+	x_idx = Variable(torch.LongTensor([x+1,x+2,x+3,x+4])).cuda() # 4x4 patch cut
+	y_idx = Variable(torch.LongTensor([y+1,y+2,y+3,y+4])).cuda()
+	f = torch.index_select(f, 2, x_idx)
+	f = torch.index_select(f, 1, y_idx)
+	
 	return f
 
+def gen_pool5_layer(visualities, coords, feature):
+	"""Generate pool5_layer map for training triplet network"""
+	pool5_layer = Variable(torch.randn(8,512,4,4)).cuda()
+
+	for i in range(args.batch_size):
+		pool5 = Variable(torch.randn(512,4,4)).cuda()
+		
+		for j,(vis, coord) in enumerate(zip(visualities, coords)):
+			vis = vis.data.cpu().numpy()[i]
+			vis = vis.argmax(axis = 0) #if vis_sleeve is 0, we can use the section of feature map at the coordination
+			coord = coord.data.cpu().numpy()[i]
+
+			if vis == 0 and coord[0] > 0 and coord[1] > 0:
+				f = get_ROI(coord / image_size * conv_size, feature[i])
+			else:
+				f = Variable(torch.zeros(512,4,4)).cuda()
+
+			if j > 0:
+				pool5 = torch.cat((pool5, f), 0)
+			else:
+				pool5 = f
+
+		#Chunk and stack the pool5 > 8 x 512 x 4 x 4
+		pool5 = torch.stack(torch.split(pool5,512,0),0)
+
+		if i > 0:
+			pool5_layer = torch.cat((pool5_layer, pool5), 0)
+		else:
+			pool5_layer = pool5
+
+	pool5_layer = torch.stack(torch.split(pool5_layer,8,0),0)
+
+	return pool5_layer
 
 if __name__ == '__main__':
 	main()    
