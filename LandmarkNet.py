@@ -6,7 +6,6 @@ import vgg
 
 
 class LandmarkNet(nn.Module):
-
 	def __init__(self, vgg16):
 		super(LandmarkNet, self).__init__()
 		self.conv5 = nn.Sequential(

@@ -1,5 +1,6 @@
 '''To-Do
-0. 64x8x512x4x4 의 스택으로 이루어진 데이터 셋 만들 것
+clear 64x8x512x4x4 의 스택으로 이루어진 데이터 셋 만들 것
+0. Triplet loader 작성할 것.,!
 '''
 
 from __future__ import print_function
@@ -21,9 +22,11 @@ from glob import glob
 import pandas as pd
 from pandas import Series, DataFrame
 from landmark_loader import ImageFolder
+from triplet_loader import TripletFolder
 from LandmarkNet import landmarknet
 from VisualNet import visualnet
 from TripletNet import tripletnet
+from VisualNet import visualnet
 import math
 import operator
 
@@ -86,10 +89,13 @@ def main():
 	
 	land_model = landmarknet()
 	visual_model = visualnet()
+
 	if args.cuda:
 		land_model = torch.nn.DataParallel(land_model).cuda()
 		visual_model = torch.nn.DataParallel(visual_model).cuda()
-
+	
+#triplet_model = tripletnet(visual_model)
+#triplet_model = torch.nn.DataParallel(triplet_model).cuda()
 	# optionally resume from a checkpoint
 	if args.land_load:
 		if os.path.isfile(args.land_load):
@@ -107,6 +113,7 @@ def main():
 	#Annotation 로딩
 	
 	#이미지 로딩
+	'''
 	image_data = torch.utils.data.DataLoader(
 		ImageFolder(data_path,transforms.Compose([
 			transforms.Scale(224),
@@ -119,15 +126,29 @@ def main():
 		num_workers = args.workers, 
 		pin_memory = pin,
 	)
-	print("Complete Data loading(%s)" % len(image_data))
+	'''
+	triplet_data = torch.utils.data.DataLoader(
+		TripletFolder(data_path,transforms.Compose([
+			transforms.Scale(224),
+			transforms.CenterCrop(224),
+			#transforms.RandomHorizontalFlip(),
+			transforms.ToTensor(),
+			normalize,
+		])),
+		batch_size=args.batch_size, 
+		shuffle=True,
+		num_workers = args.workers,
+		pin_memory = pin,
+	)
 
-	softmax = nn.CrossEntropyLoss().cuda()
-	l1loss = nn.L1Loss().cuda()
-	params = filter(lambda p: p.requires_grad, land_model.parameters())
+#print("Complete Data loading(%s)" % len(image_data))
+
+	triplet_loss = nn.TripletMarginLoss(margin=2.0, p=2).cuda()
+	params = filter(lambda p: p.requires_grad, visual_model.parameters())
 	optimizer = torch.optim.Adagrad(params, args.lr,weight_decay=args.weight_decay)
 
 	if args.evaluate:
-		validate(image_data, land_model, visual_model, softmax,l1loss)
+		validate(triplet_data, land_model, visual_model, triplet_loss, optimizer)
 		return
 
 
@@ -149,32 +170,75 @@ def main():
 		#}, is_best)
 		},True)
 
+def validate(triplet_data, land_model, visual_model, triplet_loss, optimizer):
+	land_model.eval()
+	visual_model.train()
+
+	for anchor, positive, negative in triplet_data:
+		input_var = Variable(anchor)
+		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, anchor_feature = land_model(input_var)
+		anchor_pool5_layer = gen_pool5_layer((vis_collar[:,0:3], vis_collar[:,3:6],vis_sleeve[:,0:3], vis_sleeve[:,3:6],
+				vis_waistline[:,0:3], vis_waistline[:,3:6],vis_hem[:,0:3], vis_hem[:,3:6]), 
+				(collar_out[:,0:2], collar_out[:,2:4], sleeve_out[:,0:2], sleeve_out[:,2:4],
+				 waistline_out[:,0:2], waistline_out[:,2:4], hem_out[:,0:2], hem_out[:,2:4]), anchor_feature)
+		embedded_anchor = visual_model(anchor_feature, anchor_pool5_layer)
+
+		input_var = Variable(positive)
+		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, positive_feature = land_model(input_var)
+		positive_pool5_layer = gen_pool5_layer((vis_collar[:,0:3], vis_collar[:,3:6],vis_sleeve[:,0:3], vis_sleeve[:,3:6],
+				vis_waistline[:,0:3], vis_waistline[:,3:6],vis_hem[:,0:3], vis_hem[:,3:6]),
+				(collar_out[:,0:2], collar_out[:,2:4], sleeve_out[:,0:2], sleeve_out[:,2:4],
+				 waistline_out[:,0:2], waistline_out[:,2:4], hem_out[:,0:2], hem_out[:,2:4]), positive_feature)
+		embedded_positive = visual_model(positive_feature, positive_pool5_layer)
+
+		input_var = Variable(negative)
+		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, negative_feature = land_model(input_var)
+		negative_pool5_layer = gen_pool5_layer((vis_collar[:,0:3], vis_collar[:,3:6],vis_sleeve[:,0:3], vis_sleeve[:,3:6],
+				vis_waistline[:,0:3], vis_waistline[:,3:6],vis_hem[:,0:3], vis_hem[:,3:6]),
+				(collar_out[:,0:2], collar_out[:,2:4], sleeve_out[:,0:2], sleeve_out[:,2:4],
+				 waistline_out[:,0:2], waistline_out[:,2:4], hem_out[:,0:2], hem_out[:,2:4]), negative_feature)
+		embedded_negative = visual_model(negative_feature, negative_pool5_layer)	
+
+		loss = triplet_loss(embedded_anchor, embedded_positive, embedded_negative)
+		print(loss)
+		#dista, distb = triplet_model(anchor_feature,anchor_pool5_layer,positive_feature,positive_pool5_layer,negative_feature,negative_pool5_layer)
+		optimizer.zero_grad()
+		loss.backward()
+		optimizer.step()
+
+		
+
+#score = visual_model(feature, pool5_layer)
+#		print(score)
+
+'''
 def validate(val_loader, land_model, visual_model, softmax, l1loss):
 	batch_time = AverageMeter()
 	data_time = AverageMeter()
 	losses_v = AverageMeter()
 	losses_l = AverageMeter()
-	top1 = AverageMeter()
-	top5 = AverageMeter()
-	# switch to train mode
-	land_model.eval()
-	visual_model.eval()
+		       top1 = AverageMeter()
+		       top5 = AverageMeter()
+		       # switch to train mode
+		       land_model.eval()
+	    visual_model.eval()
 
-	end = time.time()
-	for i, (input, clothes_type, collar, sleeve, waistline, hem, path) in enumerate(val_loader):
-		# measure data loading time
-		data_time.update(time.time() - end)
-		input_var = Variable(input)
-		# compute output
-		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, feature = land_model(input_var)
+	    end = time.time()
+	    for i, (input, clothes_type, collar, sleeve, waistline, hem, path) in enumerate(val_loader):
+			        # measure data loading time
+			        data_time.update(time.time() - end)
+	        input_var = Variable(input)
+	        # compute output
+	        vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, feature = land_model(input_var)
 
-		pool5_layer = gen_pool5_layer((vis_collar[:,0:3], vis_collar[:,3:6],vis_sleeve[:,0:3], vis_sleeve[:,3:6],
-					vis_waistline[:,0:3], vis_waistline[:,3:6],vis_hem[:,0:3], vis_hem[:,3:6]), 
-					(collar_out[:,0:2], collar_out[:,2:4], sleeve_out[:,0:2], sleeve_out[:,2:4],
-					 waistline_out[:,0:2], waistline_out[:,2:4], hem_out[:,0:2], hem_out[:,2:4]), feature)
+	        pool5_layer = gen_pool5_layer((vis_collar[:,0:3], vis_collar[:,3:6],vis_sleeve[:,0:3], vis_sleeve[:,3:6],
+						                    vis_waistline[:,0:3], vis_waistline[:,3:6],vis_hem[:,0:3], vis_hem[:,3:6]),
+					                    (collar_out[:,0:2], collar_out[:,2:4], sleeve_out[:,0:2], sleeve_out[:,2:4],
+										                      waistline_out[:,0:2], waistline_out[:,2:4], hem_out[:,0:2], hem_out[:,2:4]), feature)
 
-		score = visual_model(feature, pool5_layer)
-		print(score)
+	        score = visual_model(feature, pool5_layer)
+	        print(score)
+'''
 
 
 def train(train_loader, model, softmax, l1loss, optimizer, epoch):
@@ -316,22 +380,22 @@ def accuracy(output, target, topk=(1,)):
 def get_ROI(coord,feature_map):
 	"""Get Region of Interest(Landmark) by using landmark coordinations"""
 	pad = nn.ReflectionPad2d(2)
-	f = pad(feature_map)
+	
+	f = pad(torch.unsqueeze(feature_map, 0))
 	x = math.floor(coord[0].tolist())
 	y = math.floor(coord[1].tolist())
 	
 	x_idx = Variable(torch.LongTensor([x+1,x+2,x+3,x+4])).cuda() # 4x4 patch cut
 	y_idx = Variable(torch.LongTensor([y+1,y+2,y+3,y+4])).cuda()
-	f = torch.index_select(f, 2, x_idx)
-	f = torch.index_select(f, 1, y_idx)
+	f = torch.index_select(f, 3, x_idx)
+	f = torch.index_select(f, 2, y_idx)
 	
-	return f
+	return torch.squeeze(f)
 
 def gen_pool5_layer(visualities, coords, feature):
 	"""Generate pool5_layer map for training triplet network"""
 	pool5_layer = Variable(torch.randn(8,512,4,4)).cuda()
-
-	for i in range(args.batch_size):
+	for i in range(len(feature)):
 		pool5 = Variable(torch.randn(512,4,4)).cuda()
 		
 		for j,(vis, coord) in enumerate(zip(visualities, coords)):

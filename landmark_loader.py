@@ -3,7 +3,6 @@ from PIL import Image
 from PIL import ImageFile
 import os
 import json
-import re
 from glob import glob
 import pandas as pd
 from pandas import Series, DataFrame
