@@ -16,26 +16,17 @@ import torch.optim as optim
 from torchvision import transforms
 from torch.autograd import Variable
 import torch.backends.cudnn as cudnn
-import numpy as np
-import readline
-from glob import glob
-import pandas as pd
-from pandas import Series, DataFrame
-from landmark_loader import ImageFolder
-from triplet_loader import TripletFolder
-from LandmarkNet import landmarknet
-from VisualNet import visualnet
-from TripletNet import tripletnet
-from VisualNet import visualnet
+from data.triplet_loader import TripletFolder
+from models.LandmarkNet import landmarknet
+from models.VisualNet import visualnet
 import math
-import operator
 
 image_size = 256
 conv_size = 28
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch Trainer for Triplet Loss of Rich Annotations')
 parser.add_argument('data', metavar = 'DIR',help = 'path to dataset')
-parser.add_argument('--batch-size', type=int, default=64, metavar='N',
+parser.add_argument('--batch-size', type=int, default=32, metavar='N',
                     help='input batch size for training (default: 64)')
 parser.add_argument('--epochs', type=int, default=150, metavar='N',
                     help='number of epochs to train (default: 100)')
@@ -67,8 +58,6 @@ parser.add_argument('--print-freq', '-p', default=10, type=int,
 					metavar='N', help='print frequency (default: 10)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
 					help='evaluate model on validation set')
-parser.add_argument('--resume', default='', type=str, 
-					help='path to latest checkpoint (default: none)')
 
 best_acc = 0
 
@@ -93,13 +82,16 @@ def main():
 	if args.cuda:
 		land_model = torch.nn.DataParallel(land_model).cuda()
 		visual_model = torch.nn.DataParallel(visual_model).cuda()
+		triplet_loss = nn.TripletMarginLoss(margin=2.0, p=2).cuda()
+
+	print("Model parameters loaded")
 	
 	# optionally resume from a checkpoint
 	if args.land_load:
 		if os.path.isfile(args.land_load):
 			print("=> loading checkpoint '{}'".format(args.land_load))
 			checkpoint = torch.load(args.land_load)
-			args.start_epoch = checkpoint['epoch']
+			#args.start_epoch = checkpoint['epoch']
 			#best_prec1 = checkpoint['best_prec1']
 			land_model.load_state_dict(checkpoint['state_dict'])
 			print("=> loaded checkpoint '{}' (epoch {})".format(args.land_load, checkpoint['epoch']))
@@ -108,28 +100,11 @@ def main():
 
 	normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
-	#Annotation 로딩
-	
-	#이미지 로딩
-	'''
-	image_data = torch.utils.data.DataLoader(
-		ImageFolder(data_path,transforms.Compose([
-			transforms.Scale(224),
-			transforms.CenterCrop(224),
-			transforms.ToTensor(),
-			normalize,
-		])),
-		batch_size = args.batch_size,
-		shuffle = True,
-		num_workers = args.workers, 
-		pin_memory = pin,
-	)
-	'''
-	triplet_data = torch.utils.data.DataLoader(
+	#triplet data loading	
+	triplet_train_data = torch.utils.data.DataLoader(
 		TripletFolder(data_path,transforms.Compose([
 			transforms.Scale(224),
 			transforms.CenterCrop(224),
-			#transforms.RandomHorizontalFlip(),
 			transforms.ToTensor(),
 			normalize,
 		])),
@@ -139,9 +114,8 @@ def main():
 		pin_memory = pin,
 	)
 
-#print("Complete Data loading(%s)" % len(image_data))
+	print("Complete Data loading(%s)" % len(triplet_train_data))
 
-	triplet_loss = nn.TripletMarginLoss(margin=2.0, p=2).cuda()
 	params = filter(lambda p: p.requires_grad, visual_model.parameters())
 	optimizer = torch.optim.Adagrad(params, args.lr,weight_decay=args.weight_decay)
 
@@ -153,26 +127,28 @@ def main():
 	for epoch in range(args.start_epoch, args.epochs):
 		adjust_learning_rate(optimizer, epoch)
 		# train for one epoch
-		train(triplet_data, land_model, visual_model, triplet_loss, optimizer)
+		train(epoch, triplet_train_data, land_model, visual_model, triplet_loss, optimizer)
 		# evaluate on validation set
 		#prec1 = validate(val_loader, model, criterion)
 
 	    # remember best prec@1 and save checkpoint
 		#		is_best = prec1 > best_prec1
 		#		best_prec1 = max(prec1, best_prec1)
-#save_checkpoint({
-#			'epoch': epoch + 1,
-#			'arch': 'visualnet', 
-#			'state_dict': model.state_dict(),
+		save_checkpoint({
+			'epoch': epoch + 1,
+			'arch': 'visualnet', 
+			'state_dict': visual_model.state_dict(),
 		#'best_prec1': best_prec1,
 		#}, is_best)
-#		},True)
+		},True)
 
-def train(triplet_data, land_model, visual_model, triplet_loss, optimizer):
+def train(epoch, triplet_data, land_model, visual_model, triplet_loss, optimizer):
+	losses = AverageMeter()
+
 	land_model.eval()
 	visual_model.train()
 
-	for anchor, positive, negative in triplet_data:
+	for i, (anchor, positive, negative) in enumerate(triplet_data):
 		input_var = Variable(anchor)
 		vis_collar, vis_sleeve, vis_waistline, vis_hem, collar_out, sleeve_out, waistline_out, hem_out, anchor_feature = land_model(input_var)
 		anchor_pool5_layer = gen_pool5_layer((vis_collar[:,0:3], vis_collar[:,3:6],vis_sleeve[:,0:3], vis_sleeve[:,3:6],
@@ -198,11 +174,16 @@ def train(triplet_data, land_model, visual_model, triplet_loss, optimizer):
 		embedded_negative = visual_model(negative_feature, negative_pool5_layer)	
 
 		loss = triplet_loss(embedded_anchor, embedded_positive, embedded_negative)
-		print(loss)
-		#dista, distb = triplet_model(anchor_feature,anchor_pool5_layer,positive_feature,positive_pool5_layer,negative_feature,negative_pool5_layer)
+		
 		optimizer.zero_grad()
 		loss.backward()
 		optimizer.step()
+	
+		losses.update(loss.data[0], anchor.size(0))
+
+		if i % args.print_freq == 0:
+			print('Epoch: [{0}][{1}/{2}]\t'	
+					'Location Loss {loss.val:.4f} ({loss.avg:.4f})'.format(epoch, i, len(triplet_data), loss=losses))
 
 # Print iterations progress
 def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, length = 100, fill = '█'):
@@ -214,16 +195,8 @@ def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, 
 	if iteration == total:
 		print()
 
-def cosine_similarity(x1, x2, dim=1, eps=1e-8):
-	w12 = torch.sum(x1 * x2, dim)
-	w1 = torch.norm(x1, 2, dim)
-	w2 = torch.norm(x2, 2, dim)
-	return (w12 / (w1 * w2).clamp(min=eps)).squeeze()
-
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+def save_checkpoint(state, is_best, filename='visual_checkpoint.pth.tar'):
 	torch.save(state, filename)
-	if is_best:
-		shutil.copyfile(filename, 'model_best.pth.tar')
 
 class AverageMeter(object):
 	"""Computes and stores the average and current value"""
@@ -264,29 +237,36 @@ def get_ROI(coord,feature_map):
 	pad = nn.ReflectionPad2d(2)
 	
 	f = pad(torch.unsqueeze(feature_map, 0))
-	x = math.floor(coord[0].tolist())
-	y = math.floor(coord[1].tolist())
+	x = math.floor(coord[0])
+	y = math.floor(coord[1])
 	
-	x_idx = Variable(torch.LongTensor([x+1,x+2,x+3,x+4])).cuda() # 4x4 patch cut
-	y_idx = Variable(torch.LongTensor([y+1,y+2,y+3,y+4])).cuda()
+	x_idx = Variable(torch.LongTensor([x+1,x+2,x+3,x+4]))
+	y_idx = Variable(torch.LongTensor([y+1,y+2,y+3,y+4]))
+
+	if args.cuda:
+		x_idx = x_idx.cuda() # 4x4 patch cut
+		y_idx = y_idx.cuda()
+
 	f = torch.index_select(f, 3, x_idx)
 	f = torch.index_select(f, 2, y_idx)
 	
 	return torch.squeeze(f)
 
 def gen_pool5_layer(visualities, coords, feature):
-	"""Generate pool5_layer map for training triplet network"""
-	pool5_layer = Variable(torch.randn(8,512,4,4)).cuda()
+	"""Generate pool5_layer map for training triplet network
+	visualities, coords: 8 visual results that consist of args.batch_size x 3
+	feature: args.batch_size x 512 x 28 x 28
+	"""
+	pool5_layer = 0 #Variable(torch.randn(8,512,4,4)).cuda()
+	
 	for i in range(len(feature)):
-		pool5 = Variable(torch.randn(512,4,4)).cuda()
+		pool5 = 0 #Variable(torch.randn(512,4,4)).cuda()
 		
 		for j,(vis, coord) in enumerate(zip(visualities, coords)):
-			vis = vis.data.cpu().numpy()[i]
-			vis = vis.argmax(axis = 0) #if vis_sleeve is 0, we can use the section of feature map at the coordination
-			coord = coord.data.cpu().numpy()[i]
-
-			if vis == 0 and coord[0] > 0 and coord[1] > 0:
-				f = get_ROI(coord / image_size * conv_size, feature[i])
+			_, max_idx = torch.max(vis,1)
+			
+			if max_idx.data[0] == 0 and coord[i].data[0] > 0 and coord[i].data[1] > 0 and coord[i].data[0] < 256 and coord[i].data[1] < 256:
+				f = get_ROI(coord[i].data / image_size * conv_size, feature[i])
 			else:
 				f = Variable(torch.zeros(512,4,4)).cuda()
 
