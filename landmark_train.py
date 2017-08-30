@@ -1,7 +1,4 @@
 '''To-Do
-0. Visual Loss와 Location Loss의 통합 필요. 현재는 노멀라이즈 되어있지 않기 때문에, Visual Loss가 손해보는 구조임.
-1. Triplet Loss 구성하기위한 새로운 네트워크 개발 필요 
-2. 실제 triplet을 구하기 위한 새로우 main 개발 필요
 '''
 
 from __future__ import print_function
@@ -35,10 +32,6 @@ parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='enables CUDA training')
 parser.add_argument('--resume', default='', type=str,
                     help='path to latest checkpoint (default: none)')
-parser.add_argument('--name', default='Visual_Search', type=str,
-                    help='name of experiment')
-parser.add_argument('--test', dest='test', action='store_true',
-                    help='To only run inference on test set')
 parser.add_argument('--workers', type = int, default = 8, metavar = 'N',
 					help='number of works for data londing')
 parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,	metavar='W', 
@@ -48,8 +41,9 @@ parser.add_argument('--print-freq', '-p', default=100, type=int,
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
 					help='evaluate model on validation set')
 parser.add_argument('-a', '--arch', default='resnet50', type=str,
-					help='Architecture of network for training in resnet50,101,152')
-
+					help='Architecture of network for training in resnet18,34,50,101,152')
+parser.add_argument('-c', '--clothes', default=0, type=int,
+					help='Clothes type:0 - upper body, 1 - lower body, 2 - full body')
 
 def main():
 	#기본 설정 부분
@@ -68,7 +62,7 @@ def main():
 		pin = False
 		print("CPU Mode")
 	
-	model = landmarknet(args.arch)
+	model = landmarknet(args.arch, args.clothes)
 	if args.cuda:
 		model = torch.nn.DataParallel(model).cuda()
 
@@ -78,7 +72,8 @@ def main():
 			print("=> loading checkpoint '{}'".format(args.resume))
 			checkpoint = torch.load(args.resume)
 			args.start_epoch = checkpoint['epoch']
-			best_dist = checkpoint['best_dist']
+			args.clothes = checkpoint['clothes_type']
+			best_dist = checkpoint['best_distance']
 			model.load_state_dict(checkpoint['state_dict'])
 			print("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
 		else:
@@ -87,7 +82,7 @@ def main():
 	normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 	
 	val_data = torch.utils.data.DataLoader(
-		ImageFolder(data_path,False,transforms.Compose([
+		ImageFolder(data_path,False,args.clothes,transforms.Compose([
 			transforms.Scale(256),
 			transforms.CenterCrop(256),
 			transforms.ToTensor(),
@@ -102,11 +97,11 @@ def main():
 	print("Complete Validation Data loading(%s)" % len(val_data))
 
 	if args.evaluate:
-		validate(val_data, model)
+		validate(val_data, model, args.clothes)
 		return
 
 	image_data = torch.utils.data.DataLoader(
-		ImageFolder(data_path,True,transforms.Compose([
+		ImageFolder(data_path,True,args.clothes,transforms.Compose([
 			transforms.Scale(256),
 			transforms.CenterCrop(256),
 			transforms.ToTensor(),
@@ -120,28 +115,29 @@ def main():
 
 	print("Complete Data loading(%s)" % len(image_data))
 
-	criterion = nn.SmoothL1Loss().cuda()
+	criterion = nn.L1Loss().cuda()
 	params = filter(lambda p: p.requires_grad, model.parameters())
 	optimizer = torch.optim.Adagrad(params, lr = args.lr, weight_decay = args.weight_decay)
 
 	for epoch in range(args.start_epoch, args.epochs):
 		adjust_learning_rate(optimizer, epoch)
 		# train for one epoch
-		train(image_data, model, criterion, optimizer, epoch)
+		train(image_data, model, criterion, optimizer, epoch, args.clothes)
 		# evaluate on validation set
-		dist = validate(val_data, model)
+		dist = validate(val_data, model, args.clothes)
 
 	    # remember best prec@1 and save checkpoint
 		is_best = dist < best_dist
 		best_dist = min(dist, best_dist)
 		save_checkpoint({
 			'epoch': epoch + 1,
-			'arch': args.arch, 
+			'arch': args.arch,
+			'clothes_type':args.clothes,
 			'state_dict': model.state_dict(),
 			'best_distance': best_dist,
 		}, is_best)
 
-def validate(val_loader, model):
+def validate(val_loader, model, clothes_type):
 	batch_time = AverageMeter()
 	data_time = AverageMeter()
 	losses = AverageMeter()
@@ -149,39 +145,84 @@ def validate(val_loader, model):
     
 	model.eval()
 	end = time.time()
-	for i, (input, collar, sleeve, waistline, hem, path) in enumerate(val_loader):
-		# measure data loading time
-		data_time.update(time.time() - end)
-		input_var = Variable(input)
-		# compute output
-		collar_out, sleeve_out, waistline_out, hem_out, _ = model(input_var)
 
-		# Answers
-		collar = Variable(collar).float().cuda(async=True)
-		sleeve = Variable(sleeve).float().cuda(async=True)
-		waistline = Variable(waistline).float().cuda(async=True)
-		hem = Variable(hem).float().cuda(async=True)
+	if clothes_type == 0:
+		for i, (input, collar, sleeve, hem, path) in enumerate(val_loader):
+			data_time.update(time.time() - end)
+			input_var = Variable(input)
 
-		dist = accuracy((collar[:,2:6],sleeve[:,2:6],waistline[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,waistline_out,hem_out))
-		distance.update(dist.data[0], 1)
-		
-		#print("PATH: ",path[0])
-		#print("IN: ",sleeve[0])
-		#print("OUT: ",sleeve_out[0])
+			# compute output
+			collar_out, sleeve_out, hem_out, _ = model(input_var)
 
-        # measure elapsed time
-		batch_time.update(time.time() - end)
-		end = time.time()
+	        # Answers
+			collar = Variable(collar).float().cuda(async=True)
+			sleeve = Variable(sleeve).float().cuda(async=True)
+			hem = Variable(hem).float().cuda(async=True)
+			dist = accuracy((collar[:,2:6],sleeve[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,hem_out))
+			distance.update(dist.data[0], 1)
 
-		if i % args.print_freq == 0:
-		    print('Epoch: [{0}/{1}]\t'
+			batch_time.update(time.time() - end)
+			end = time.time()
+
+			if i % args.print_freq == 0:
+				print('Epoch: [{0}/{1}]\t'
+						'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+						'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+						'Distances {dist.val:.4f} ({dist.avg:.4f})'.format(i, len(val_loader), batch_time=batch_time,data_time=data_time, dist = distance))
+
+	elif clothes_type == 1:
+		for i, (input, waistline, hem, path) in enumerate(val_loader):
+			data_time.update(time.time() - end)
+			input_var = Variable(input)
+			
+			waistline_out, hem_out, _ = model(input_var)
+			waistline = Variable(waistline).float().cuda(async=True)
+			hem = Variable(hem).float().cuda(async=True)
+			print(path[0],waistline[0],waistline_out[0])
+			dist = accuracy((waistline[:,2:6],hem[:,2:6]),(waistline_out,hem_out))
+			distance.update(dist.data[0], 1)
+
+			batch_time.update(time.time() - end)
+			end = time.time()
+
+			if i % args.print_freq == 0:
+				print('Epoch: [{0}/{1}]\t'
 					'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
 					'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
 					'Distances {dist.val:.4f} ({dist.avg:.4f})'.format(i, len(val_loader), batch_time=batch_time,data_time=data_time, dist = distance))
 
+	else:
+		for i, (input, collar, sleeve, waistline, hem, path) in enumerate(val_loader):
+			# measure data loading time
+			data_time.update(time.time() - end)
+			input_var = Variable(input)
+			# compute output
+			collar_out, sleeve_out, waistline_out, hem_out, _ = model(input_var)
+
+			# Answers
+			collar = Variable(collar).float().cuda(async=True)
+			sleeve = Variable(sleeve).float().cuda(async=True)
+			waistline = Variable(waistline).float().cuda(async=True)
+			hem = Variable(hem).float().cuda(async=True)
+
+			dist = accuracy((collar[:,2:6],sleeve[:,2:6],waistline[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,waistline_out,hem_out))
+			distance.update(dist.data[0], 1)
+		
+
+			# measure elapsed time
+			batch_time.update(time.time() - end)
+			end = time.time()
+
+			if i % args.print_freq == 0:
+				print('Epoch: [{0}/{1}]\t'
+					'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+					'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+					'Distances {dist.val:.4f} ({dist.avg:.4f})'.format(i, len(val_loader), batch_time=batch_time,data_time=data_time, dist = distance))
+	
+	print('Test Result: Distances ({dist.avg:.4f})'.format(dist = distance))
 	return distance.avg
 
-def train(train_loader, model, criterion, optimizer, epoch):
+def train(train_loader, model, criterion, optimizer, epoch, clothes_type):
 	'''
 	In clothes type, 
 	"1" represents upper-body clothes, 
@@ -201,49 +242,123 @@ def train(train_loader, model, criterion, optimizer, epoch):
 	# switch to train mode
 	model.train()
 	end = time.time()
-	for i, (input, collar, sleeve, waistline, hem, path) in enumerate(train_loader):
-		# measure data loading time
-		data_time.update(time.time() - end)
-		input_var = Variable(input)
-		optimizer.zero_grad()
-		#for name,m in model.named_modules():
-		#	if name in ['module.features.28']:
-		#		print(m.weight)
-		# compute output
-		collar_out, sleeve_out, waistline_out, hem_out, _ = model(input_var)
+	if clothes_type == 0:
+		for i, (input, collar, sleeve, hem, path) in enumerate(train_loader):
+			# measure data loading time
+			data_time.update(time.time() - end)
+			input_var = Variable(input)
+
+			collar_out, sleeve_out, hem_out, _ = model(input_var)
+			# Answers
+			collar = Variable(collar).float().cuda(async=True)
+			sleeve = Variable(sleeve).float().cuda(async=True)
+			hem = Variable(hem).float().cuda(async=True)
+
+			hem_loss = criterion(hem_out, hem[:,2:6])
+			collar_loss =criterion(collar_out, collar[:,2:6])
+			sleeve_loss = criterion(sleeve_out, sleeve[:,2:6])
+
+			loss = hem_loss + collar_loss + sleeve_loss
+
+			dist = accuracy((collar[:,2:6],sleeve[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,hem_out))
+			losses.update(loss.data[0], input.size(0))
+			distance.update(dist.data[0], 1)
+
+			# compute gradient and do SGD step
+			optimizer.zero_grad()
+			loss.backward()
+			optimizer.step()
+
+			# measure elapsed time
+			batch_time.update(time.time() - end)
+			end = time.time()
+
+			if i % args.print_freq == 0:
+				print('Epoch: [{0}][{1}/{2}]\t'
+						'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+						'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+						'Location Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+						'Distances {dist.val:.4f} ({dist.avg:.4f})'.format(epoch, i, len(train_loader), batch_time=batch_time,data_time=data_time, loss = losses, dist = distance))
+
+	elif clothes_type == 1:
+		for i, (input, waistline, hem, path) in enumerate(train_loader):
+			# measure data loading time
+			data_time.update(time.time() - end)
+			input_var = Variable(input)
+			optimizer.zero_grad()
+			waistline_out, hem_out, _ = model(input_var)
+
+			# Answers
+			waistline = Variable(waistline).float().cuda(async=True)
+			hem = Variable(hem).float().cuda(async=True)
+
+			hem_loss = criterion(hem_out, hem[:,2:6])
+			waistline_loss = criterion(waistline_out, waistline[:,2:6])
+
+			loss = hem_loss + waistline_loss
+
+			dist = accuracy((waistline[:,2:6],hem[:,2:6]),(waistline_out,hem_out))
+			losses.update(loss.data[0], input.size(0))
+			distance.update(dist.data[0], 1)
+
+	        # compute gradient and do SGD step
+			loss.backward()
+			optimizer.step()
+
+	        # measure elapsed time
+			batch_time.update(time.time() - end)
+			end = time.time()
+
+			if i % args.print_freq == 0:
+				print('Epoch: [{0}][{1}/{2}]\t'
+						'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+						'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+						'Location Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+						'Distances {dist.val:.4f} ({dist.avg:.4f})'.format(epoch, i, len(train_loader), batch_time=batch_time, data_time=data_time, loss = losses, dist = distance))
+
+	else:
+		for i, (input, collar, sleeve, waistline, hem, path) in enumerate(train_loader):
+			# measure data loading time
+			data_time.update(time.time() - end)
+			input_var = Variable(input)
+			optimizer.zero_grad()
+			#for name,m in model.named_modules():
+			#	if name in ['module.features.28']:
+			#		print(m.weight)
+			# compute output
+			collar_out, sleeve_out, waistline_out, hem_out, _ = model(input_var)
 	
-		# Answers
-		collar = Variable(collar).float().cuda(async=True)
-		sleeve = Variable(sleeve).float().cuda(async=True)
-		waistline = Variable(waistline).float().cuda(async=True)
-		hem = Variable(hem).float().cuda(async=True)
+			# Answers
+			collar = Variable(collar).float().cuda(async=True)
+			sleeve = Variable(sleeve).float().cuda(async=True)
+			waistline = Variable(waistline).float().cuda(async=True)
+			hem = Variable(hem).float().cuda(async=True)
 
-		hem_loss = criterion(hem_out, hem[:,2:6])
-		collar_loss =criterion(collar_out, collar[:,2:6])
-		sleeve_loss = criterion(sleeve_out, sleeve[:,2:6])
-		waistline_loss = criterion(waistline_out, waistline[:,2:6])
+			hem_loss = criterion(hem_out, hem[:,2:6])
+			collar_loss =criterion(collar_out, collar[:,2:6])
+			sleeve_loss = criterion(sleeve_out, sleeve[:,2:6])
+			waistline_loss = criterion(waistline_out, waistline[:,2:6])
 		
-		loss = hem_loss + collar_loss + sleeve_loss + waistline_loss
+			loss = hem_loss + collar_loss + sleeve_loss + waistline_loss
 
-		dist = accuracy((collar[:,2:6],sleeve[:,2:6],waistline[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,waistline_out,hem_out))
-		losses.update(loss.data[0], input.size(0))
-		distance.update(dist.data[0], 1)
+			dist = accuracy((collar[:,2:6],sleeve[:,2:6],waistline[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,waistline_out,hem_out))
+			losses.update(loss.data[0], input.size(0))
+			distance.update(dist.data[0], 1)
 	    
-		# compute gradient and do SGD step
-		loss.backward()
-		optimizer.step()
+			# compute gradient and do SGD step
+			loss.backward()
+			optimizer.step()
 
-		# measure elapsed time
-		batch_time.update(time.time() - end)
-		end = time.time()
+			# measure elapsed time
+			batch_time.update(time.time() - end)
+			end = time.time()
 
-		if i % args.print_freq == 0:
-			print('Epoch: [{0}][{1}/{2}]\t'
-				'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-				'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-				'Location Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-				'Distances {dist.val:.4f} ({dist.avg:.4f})'.format(epoch, i, len(train_loader), batch_time=batch_time,
-				data_time=data_time, loss = losses, dist = distance))
+			if i % args.print_freq == 0:
+				print('Epoch: [{0}][{1}/{2}]\t'
+					'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+					'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+					'Location Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+					'Distances {dist.val:.4f} ({dist.avg:.4f})'.format(epoch, i, len(train_loader), batch_time=batch_time, data_time=data_time, loss = losses, dist = distance))
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
 	torch.save(state, filename)
@@ -274,13 +389,15 @@ def adjust_learning_rate(optimizer, epoch):
 def accuracy(target,output):
 	"""Computes the precision@k for distances of the landmarks"""
 	dist_function = nn.PairwiseDistance(p=1)
-
-	collar,sleeve,waistline,hem = target
-	collar_out,sleeve_out,waistline_out,hem_out = output
 	
 	distances = dist_function(torch.cat(target,1),torch.cat(output,1))
-
-	return distances.mean() / 8
+	
+	if args.clothes == 0:
+		return distances.mean() /12
+	elif args.clothes == 1:
+		return distances.mean() / 8
+	else:
+		return distances.mean() / 16
 
 if __name__ == '__main__':
 	main()    

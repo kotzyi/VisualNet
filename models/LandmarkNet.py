@@ -5,36 +5,40 @@ import torchvision.models as models
 import math
 
 class LandmarkNet(nn.Module):
-	def __init__(self, resnet):
+	def __init__(self, architect, types, resnet):
 		super(LandmarkNet, self).__init__()
-		self.fc6 = nn.Sequential(
-			nn.Linear(2048, 4096),
-			nn.ReLU(True),
-			nn.Dropout(),
-		)
+		self.types = types
+
+		if architect in ['resnet18','resnet34']:
+			in_ch = 512
+		else:
+			in_ch = 2048
+
+		out_ch = 4096
+
 		self.landmark_collar = nn.Sequential(
-			nn.Linear(2048, 2048),
+			nn.Linear(in_ch, out_ch),
 			nn.ReLU(True),
 			nn.Dropout(),
-			nn.Linear(2048,4),
+			nn.Linear(out_ch,4),
 		)
 		self.landmark_sleeve = nn.Sequential(
-			nn.Linear(2048, 2048),
+			nn.Linear(in_ch, out_ch),
 			nn.ReLU(True),
 			nn.Dropout(),
-			nn.Linear(2048,4),
+			nn.Linear(out_ch,4),
 		)
 		self.landmark_waistline = nn.Sequential(
-			nn.Linear(2048, 2048),
+			nn.Linear(in_ch, out_ch),
 			nn.ReLU(True),
 			nn.Dropout(),
-			nn.Linear(2048,4),
+			nn.Linear(out_ch,4),
 		)
 		self.landmark_hem = nn.Sequential(
-			nn.Linear(2048, 2048),
+			nn.Linear(in_ch, out_ch),
 			nn.ReLU(True),
 			nn.Dropout(),
-			nn.Linear(2048,4),
+			nn.Linear(out_ch,4),
 		)
 		
 		self._initialize_weights()
@@ -54,12 +58,21 @@ class LandmarkNet(nn.Module):
 		l = self.conv5(feature) 
 		l = l.view(l.size(0), -1)
 
-		collar = self.landmark_collar(l)
-		sleeve = self.landmark_sleeve(l)
-		waistline = self.landmark_waistline(l)
 		hem = self.landmark_hem(l)
-		
-		return collar,sleeve,waistline,hem,feature
+		if self.types == 0:
+			collar = self.landmark_collar(l)
+			sleeve = self.landmark_sleeve(l)
+			return collar,sleeve,hem,feature
+
+		elif self.types == 1:
+			waistline = self.landmark_waistline(l)
+			return waistline,hem,feature
+
+		else:
+			collar = self.landmark_collar(l)
+			sleeve = self.landmark_sleeve(l)
+			waistline = self.landmark_waistline(l)
+			return collar,sleeve,waistline,hem,feature
 
 	def _initialize_weights(self):
 		for m in self.modules():
@@ -76,13 +89,17 @@ class LandmarkNet(nn.Module):
 				m.weight.data.normal_(0, 0.01)
 				m.bias.data.zero_()
 
-def landmarknet(architect):
+def landmarknet(architect, types):
 	if architect == 'resnet50':
-		model = LandmarkNet(models.resnet50(pretrained=True))
+		model = LandmarkNet(architect, types, models.resnet50(pretrained=True))
 	elif architect == 'resnet101':
-		model = LandmarkNet(models.resnet101(pretrained=True))
+		model = LandmarkNet(architect, types, models.resnet101(pretrained=True))
 	elif architect == 'resnet152':
-		model = LandmarkNet(models.resnet152(pretrained=True))
+		model = LandmarkNet(architect, types, models.resnet152(pretrained=True))
+	elif architect == 'resnet34':
+		model = LandmarkNet(architect, types, models.resnet34(pretrained=True))
+	else:
+		model = LandmarkNet(architect, types, models.resnet18(pretrained=True))
 
 	return model
 

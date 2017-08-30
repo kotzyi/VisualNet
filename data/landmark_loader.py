@@ -24,16 +24,17 @@ def default_loader(path):
 	return Image.open(path).convert('RGB')
 
 class ImageFolder(data.Dataset):
-	def __init__(self, root, is_train,transform = None, target_transform = None, loader = default_loader):
+	def __init__(self, root, is_train, clothes, transform = None, target_transform = None, loader = default_loader):
 		self.root = root
 		self.transform = transform
 		self.target_transform = target_transform
 		self.loader = loader
+		self.clothes = clothes
 
 		if is_train:
-			self.data_frame = pd.read_table(root+"/Anno/list_landmarks_train.txt",sep="\s+")
+			self.data_frame = pd.read_table(root+"/Anno/"+str(clothes)+"/list_landmarks_train_all.txt",sep="\s+")
 		else:
-			self.data_frame = pd.read_table(root+"/Anno/list_landmarks_test.txt",sep="\s+")
+			self.data_frame = pd.read_table(root+"/Anno/"+str(clothes)+"/list_landmarks_test_all.txt",sep="\s+")
 
 		self.image_path = self.data_frame['image_name'].values.tolist()
 		self.clothes_type = self.data_frame['clothes_type'].values.tolist()
@@ -42,18 +43,25 @@ class ImageFolder(data.Dataset):
 							'landmark_visibility_3','landmark_visibility_4','landmark_location_x_3','landmark_location_y_3','landmark_location_x_4','landmark_location_y_4',
 							'landmark_visibility_5','landmark_visibility_6','landmark_location_x_5','landmark_location_y_5','landmark_location_x_6','landmark_location_y_6',
 							'landmark_visibility_7','landmark_visibility_8','landmark_location_x_7','landmark_location_y_7','landmark_location_x_8','landmark_location_y_8',
-		]].values
-
+		]].values.tolist()
 		self.image_size = [Image.open(self.root+path).size for path in self.image_path]
-		
+
 		# Normalization of coords
 		for i in [2,4,8,10,14,16,20,22]:
-			self.data_vis_loc[:,i] = (np.array(self.data_vis_loc)[:,i]/np.array(self.image_size)[:,0]).tolist()
-			self.data_vis_loc[:,i] = [x if x > 0 else -0.1 for x in self.data_vis_loc[:,i]]
-
+			temp = (np.array(self.data_vis_loc, dtype=np.float32)[:,i] / np.array(self.image_size, dtype=np.float32)[:,0]).tolist()
+			for j,x in enumerate(temp):
+				if x > 0:
+					self.data_vis_loc[j][i] = x
+				else:
+					self.data_vis_loc[j][i] = -0.1
 		for i in [3,5,9,11,15,17,21,23]:
-			self.data_vis_loc[:,i] = (np.array(self.data_vis_loc)[:,i]/np.array(self.image_size)[:,1]).tolist()
-			self.data_vis_loc[:,i] = [x if x > 0 else -0.1 for x in self.data_vis_loc[:,i]]
+			temp = (np.array(self.data_vis_loc, dtype=np.float32)[:,i] / np.array(self.image_size, dtype=np.float32)[:,1]).tolist()
+			for j,x in enumerate(temp):
+				if x > 0:
+					self.data_vis_loc[j][i] = x
+				else:
+					self.data_vis_loc[j][i] = -0.1
+		self.data_vis_loc = np.array(self.data_vis_loc)
 
 	def __getitem__(self, index):
 		path = self.image_path[index]
@@ -63,6 +71,7 @@ class ImageFolder(data.Dataset):
 		#수정필요 왜냐하면 0 1 2 로 맞춰서 없는 것으로 변환시켜야 함.
 		empty = np.array([2.,2.,empty_value,empty_value,empty_value,empty_value])
 		mask = np.array([empty_value,empty_value])
+
 		if clothes_type == 1:
 			collar = target[0:6]
 			sleeve = target[6:12]
@@ -101,7 +110,15 @@ class ImageFolder(data.Dataset):
 
 		if self.transform is not None:
 			img = self.transform(img)
-		return (img, collar, sleeve, waistline, hem, path)
+
+		if self.clothes == 0:
+			return (img, collar, sleeve, hem, path)
+
+		elif self.clothes == 1:
+			return (img, waistline, hem, path)
+
+		else:
+			return (img, collar, sleeve, waistline, hem, path)
 
 	def __len__(self):
 		return len(self.image_path)
