@@ -160,7 +160,7 @@ def validate(val_loader, model, clothes_type):
 			hem = Variable(hem).float().cuda(async=True)
 			dist = accuracy((collar[:,2:6],sleeve[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,hem_out))
 			distance.update(dist.data[0], 1)
-
+			print(path[0],sleeve[0],sleeve_out[0])
 			batch_time.update(time.time() - end)
 			end = time.time()
 

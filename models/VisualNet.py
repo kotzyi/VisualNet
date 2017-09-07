@@ -2,41 +2,45 @@ import torch
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 import math
-from models import vgg
-
+import torchvision.models as models
 
 class VisualNet(nn.Module):
 
-	def __init__(self):
+	def __init__(self, architect, types, resnet):
 		super(VisualNet, self).__init__()
-		self.conv5_global = nn.Sequential(
-			nn.MaxPool2d(kernel_size=2, stride=2),
-			nn.Conv2d(512, 512, kernel_size=3, padding=1),
-			nn.ReLU(inplace=True),
-			nn.Conv2d(512, 512, kernel_size=3, padding=1),
-			nn.ReLU(inplace=True),
-			nn.Conv2d(512, 512, kernel_size=3, padding=1),
-			nn.ReLU(inplace=True),
-			nn.MaxPool2d(kernel_size=2, stride=2),
-		)
-		#self.pool5_local == nn.MaxPool2d(kernel_size = 2,stride = 2)
+		
+		self.types = types
+		
+		if architect in ['resnet18','resnet34']:
+			local_in = 128
+			in_ch = 512
+		else:
+			local_in = 512
+			in_ch = 2048
+		out_ch = 4096
+
 		self.fc6_local = nn.Sequential(
-			nn.Linear(4 * 4 * 512 * 8, 1024),
+			nn.Linear(4 * 4 * local_in * 8, 1024),
 			nn.ReLU(True),
 			nn.Dropout(),
 		)
 		
 		self.fc6_global = nn.Sequential(
-			nn.Linear(7 * 7 * 512, 4096),
+			nn.Linear(in_ch, out_ch),
 			nn.ReLU(True),
 			nn.Dropout(),
 		)
 		self.fc7_fusion = nn.Sequential(
-			nn.Linear(1024 + 4096, 1024),
+			nn.Linear(1024 + out_ch, 1024),
 			nn.ReLU(True),
 			nn.Dropout(),
 		)
 		self._initialize_weights()
+
+		self.conv5_global = nn.Sequential(
+			*list(resnet.children())[6:9]
+		)
+
 
 	def forward(self, conv4, pool5):
 
@@ -44,7 +48,6 @@ class VisualNet(nn.Module):
 		g = g.view(g.size(0), -1)
 		g = self.fc6_global(g)
 
-		#l = self.pool5_local(pool5)
 		l = pool5.view(pool5.size(0), -1)
 		l = self.fc6_local(l)
 		
@@ -68,10 +71,21 @@ class VisualNet(nn.Module):
 				m.weight.data.normal_(0, 0.01)
 				m.bias.data.zero_()
 
-def visualnet():
-	model = VisualNet()
 
+def visualnet(architect, types):
+	if architect == 'resnet50':
+		model = VisualNet(architect, types, models.resnet50(pretrained=True))
+	elif architect == 'resnet101':
+		model = VisualNet(architect, types, models.resnet101(pretrained=True))
+	elif architect == 'resnet152':
+		model = VisualNet(architect, types, models.resnet152(pretrained=True))
+	elif architect == 'resnet34':
+		model = VisualNet(architect, types, models.resnet34(pretrained=True))
+	else:
+		model = VisualNet(architect, types, models.resnet18(pretrained=True))
+	
 	return model
+
 
 if __name__ == '__main__':
 	vsnet()
