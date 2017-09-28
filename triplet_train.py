@@ -1,6 +1,6 @@
 '''To-Do
-clear 64x8x512x4x4 의 스택으로 이루어진 데이터 셋 만들 것
-0. Triplet loader 작성할 것.,!
+1. 학습시에 모든 attribute를 사용하는 형태로 학습 코드 변경할 것!
+2. category and attribute prediction data 사용할 것!
 '''
 
 from __future__ import print_function
@@ -23,6 +23,8 @@ from models.LandmarkNet import landmarknet
 from models.VisualNet import visualnet
 import math
 import pickle
+import sklearn.metrics.pairwise
+import scipy.spatial.distance
 
 conv_size = 28
 
@@ -75,22 +77,20 @@ def main():
 	args = parser.parse_args()
 	data_path = args.data
 	args.cuda = not args.no_cuda and torch.cuda.is_available()
-	torch.manual_seed(args.seed)
 	pin = True
 	if args.cuda:
 		print("GPU Mode")
-		torch.cuda.manual_seed(args.seed)
 	else:
 		pin = False
 		print("CPU Mode")
 	
 	land_model = landmarknet(args.arch,args.clothes)
-	visual_model = visualnet(args.arch,args.clothes)
+	visual_model = visualnet(os.path.isfile(args.vis_load), args.arch,args.clothes)
 
 	if args.cuda:
 		land_model = torch.nn.DataParallel(land_model).cuda()
 		visual_model = torch.nn.DataParallel(visual_model).cuda()
-		triplet_loss = nn.TripletMarginLoss(margin=2.0, p=2).cuda()
+		triplet_loss = nn.TripletMarginLoss(margin=20.0, p=2).cuda()
 
 	print("Model parameters are loaded")
 	
@@ -98,9 +98,9 @@ def main():
 	if args.land_load:
 		if os.path.isfile(args.land_load):
 			print("=> loading checkpoint '{}'".format(args.land_load))
+			args.start_epoch = checkpoint['epoch']
 			checkpoint = torch.load(args.land_load)
 			args.clothes = checkpoint['clothes_type']
-			checkpoint = torch.load(args.land_load)
 			land_model.load_state_dict(checkpoint['state_dict'])
 			print("=> loaded checkpoint '{}' (epoch {})".format(args.land_load, checkpoint['epoch']))
 		else:
@@ -112,6 +112,7 @@ def main():
 		if os.path.isfile(args.vis_load):
 			print("=> loading checkpoint '{}'".format(args.vis_load))
 			checkpoint = torch.load(args.vis_load)
+			args.start_epoch = checkpoint['epoch']
 			visual_model.load_state_dict(checkpoint['state_dict'])
 			print("=> loaded checkpoint '{}' (epoch {})".format(args.vis_load, checkpoint['epoch']))
 		else:
@@ -119,21 +120,38 @@ def main():
 
 
 	if args.evaluate:
-		val_data = torch.utils.data.DataLoader(
-			EvalFolder(data_path,transforms.Compose([
-				transforms.Scale(256),
-				transforms.CenterCrop(256),
-				transforms.ToTensor(),
-				normalize,
-			])),
-			batch_size=args.batch_size,
-			shuffle=True,
-			num_workers = args.workers,
-			pin_memory = pin,
-		)
-		print("Complete Data loading(%s)" % len(val_data))
+		if os.path.isfile(args.save_file):
+			anchor_image = torch.utils.data.DataLoader(
+				EvalFolder(args.data,transforms.Compose([
+					transforms.Scale(256),
+					transforms.CenterCrop(256),
+					transforms.ToTensor(),
+					normalize,
+				])),
+				batch_size = args.batch_size,
+				shuffle = True,
+				num_workers = args.workers,
+				pin_memory = pin,
+			)
+			print("Complete Data loading(%s)" % len(anchor_image))
+			validate(anchor_image, land_model, visual_model)
 
-		validate(val_data, land_model, visual_model)
+		else:
+			val_data = torch.utils.data.DataLoader(
+				EvalFolder(data_path,transforms.Compose([
+					transforms.Scale(256),
+					transforms.CenterCrop(256),
+					transforms.ToTensor(),
+					normalize,
+				])),
+				batch_size=args.batch_size,
+				shuffle=True,
+				num_workers = args.workers,
+				pin_memory = pin,
+			)
+			print("Complete Data loading(%s)" % len(val_data))
+
+			validate(val_data, land_model, visual_model)
 
 		return
 
@@ -177,42 +195,38 @@ def main():
 
 def validate(val_data, land_model, visual_model):
 	if os.path.isfile(args.save_file):
-		scores = []
+		pdist = nn.PairwiseDistance(p=2)
 		results = pickle_load(args.save_file)
 		waistline_out = Variable(torch.Tensor(args.batch_size,4).fill_(-0.1)).cuda()
-		normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+		visual_model.eval()
+		land_model.eval()
 		while True:
 			anchor_path = input("PATH: ")
 			if anchor_path == "q":
 				break
 			else:
-				anchor_image = torch.utils.data.DataLoader(
-					AnchorFolder(anchor_path,transforms.Compose([
-						transforms.Scale(256),
-						transforms.CenterCrop(256),
-						transforms.ToTensor(),
-						normalize,
-					])),
-					batch_size = args.batch_size,
-					shuffle = True,
-					num_workers = args.workers,
-					pin_memory = pin,
-				)
-				for image in anchor_image:
+				for i, (path, image,collar,sleeve,waistline,hem) in enumerate(val_data):				
+#for image in anchor_image:
 					input_var = Variable(image)
+
+					collar = Variable(collar).float().cuda(async=True)
+					sleeve = Variable(sleeve).float().cuda(async=True)
+					waistline = Variable(waistline).float().cuda(async=True)
+					hem = Variable(hem).float().cuda(async=True)
+
 					collar_out, sleeve_out, hem_out, feature = land_model(input_var)
-					pool5_layer = gen_pool5_layer((collar_out[:,0:2], collar_out[:,2:4], sleeve_out[:,0:2], sleeve_out[:,2:4],
-													waistline_out[:,0:2], waistline_out[:,2:4], hem_out[:,0:2], hem_out[:,2:4]), feature)
+					pool5_layer = gen_pool5_layer((collar[:,2:4], collar[:,4:6], sleeve[:,2:4], sleeve[:,4:6],waistline_out[:,0:2], waistline_out[:,2:4], hem[:,2:4], hem[:,4:6]), feature)
 					inferenced_anchor = visual_model(feature, pool5_layer)	
-					inferenced_anchor = inferenced_anchor.data.cpu().tolist()[0]
-					
+					#inferenced_anchor = inferenced_anchor.data.cpu().tolist()[0]
+					scores = []
 					for pathes, datas in results:
 						for (path, data) in zip(pathes, datas):
-							score= [abs(a-b) for a , b in zip(data, inferenced_anchor)]
-							scores.append((path,sum(score)))
+							data = torch.FloatTensor(data).cuda()
+							score = pdist(torch.unsqueeze(data,0),inferenced_anchor.data).cpu().tolist()[0][0]
+							scores.append((path,score))
 
 					top3 = sorted(scores, key = lambda x:x[1])
-					print(top3[:3])
+					print(top3[:10])
 	
 	else:
 		#rogress bar setting
@@ -233,16 +247,19 @@ def validate(val_data, land_model, visual_model):
 				hem = Variable(hem).float().cuda(async=True)
 
 				collar_out, sleeve_out, hem_out, feature = land_model(input_var)
-				pool5_layer = gen_pool5_layer((collar[:,0:2], collar[:,2:4], sleeve[:,0:2], sleeve[:,2:4],
-												waistline[:,0:2], waistline[:,2:4], hem[:,0:2], hem[:,2:4]), feature)
+				pool5_layer = gen_pool5_layer((collar[:,2:4], collar[:,4:6], sleeve[:,2:4], sleeve[:,4:6],
+												waistline_out[:,0:2], waistline_out[:,2:4], hem[:,2:4], hem[:,4:6]), feature)
 				output = visual_model(feature, pool5_layer)
-				pickle.dump((path,output.data.cpu().tolist()),fp)
+				pickle.dump((path,output.data.cpu().tolist()),fp,protocol=pickle.HIGHEST_PROTOCOL)
 
 				counter = counter + args.batch_size
 				printProgressBar(counter, imageN, prefix = 'Progress:', suffix = 'Complete', length = 100)	
 
 def train(epoch, triplet_data, land_model, visual_model, triplet_loss, optimizer):
 	losses = AverageMeter()
+	pos_distance = AverageMeter()
+	neg_distance = AverageMeter()
+	pdist = nn.PairwiseDistance(p=2)
 
 	land_model.eval()
 	visual_model.train()
@@ -262,7 +279,7 @@ def train(epoch, triplet_data, land_model, visual_model, triplet_loss, optimizer
 #positive_pool5_layer = gen_pool5_layer((collar_out[:,0:2], collar_out[:,2:4], sleeve_out[:,0:2], sleeve_out[:,2:4],
 #				 waistline_out[:,0:2], waistline_out[:,2:4], hem_out[:,0:2], hem_out[:,2:4]), positive_feature)
 		ans = Variable(pos_ans).float().cuda(async=True)
-		pool5_layer = gen_pool5_layer((ans[:,2:4],ans[:,4:6],ans[:,8:10],ans[:,10:12],waistline_out[:,0:2], waistline_out[:,2:4],ans[:,14:16],ans[:,16:18]), anchor_feature)
+		pool5_layer = gen_pool5_layer((ans[:,2:4],ans[:,4:6],ans[:,8:10],ans[:,10:12],waistline_out[:,0:2], waistline_out[:,2:4],ans[:,14:16],ans[:,16:18]), positive_feature)
 		embedded_positive = visual_model(positive_feature, pool5_layer)
 
 		input_var = Variable(negative)
@@ -271,7 +288,7 @@ def train(epoch, triplet_data, land_model, visual_model, triplet_loss, optimizer
 #				 waistline_out[:,0:2], waistline_out[:,2:4], hem_out[:,0:2], hem_out[:,2:4]), negative_feature)
 
 		ans = Variable(neg_ans).float().cuda(async=True)
-		pool5_layer = gen_pool5_layer((ans[:,2:4],ans[:,4:6],ans[:,8:10],ans[:,10:12],waistline_out[:,0:2], waistline_out[:,2:4],ans[:,14:16],ans[:,16:18]), anchor_feature)
+		pool5_layer = gen_pool5_layer((ans[:,2:4],ans[:,4:6],ans[:,8:10],ans[:,10:12],waistline_out[:,0:2], waistline_out[:,2:4],ans[:,14:16],ans[:,16:18]), negative_feature)
 		embedded_negative = visual_model(negative_feature, pool5_layer)	
 
 		loss = triplet_loss(embedded_anchor, embedded_positive, embedded_negative)
@@ -281,10 +298,14 @@ def train(epoch, triplet_data, land_model, visual_model, triplet_loss, optimizer
 		optimizer.step()
 	
 		losses.update(loss.data[0], anchor.size(0))
+		pos_distance.update(torch.sum(pdist(embedded_anchor,embedded_positive)).data.cpu().tolist()[0]/args.batch_size)
+		neg_distance.update(torch.sum(pdist(embedded_anchor,embedded_negative)).data.cpu().tolist()[0]/args.batch_size)
 
 		if i % args.print_freq == 0:
 			print('Epoch: [{0}][{1}/{2}]\t'	
-					'Location Loss {loss.val:.4f} ({loss.avg:.4f})'.format(epoch, i, len(triplet_data), loss=losses))
+					'Triplet Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+					'Positive Distance {pos_dist.val:.4f} ({pos_dist.avg:.4f})'
+					'Negative Distance {neg_dist.val:.4f} ({neg_dist.avg:.4f})'.format(epoch, i, len(triplet_data), loss=losses, pos_dist = pos_distance, neg_dist = neg_distance))
 
 def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, length = 100, fill = '█'):
 	percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))

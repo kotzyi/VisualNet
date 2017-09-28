@@ -6,7 +6,7 @@ import torchvision.models as models
 
 class VisualNet(nn.Module):
 
-	def __init__(self, architect, types, resnet):
+	def __init__(self, resume, architect, types, resnet):
 		super(VisualNet, self).__init__()
 		
 		self.types = types
@@ -17,7 +17,7 @@ class VisualNet(nn.Module):
 		else:
 			local_in = 512
 			in_ch = 2048
-		out_ch = 4096
+		out_ch = 1024
 
 		self.fc6_local = nn.Sequential(
 			nn.Linear(4 * 4 * local_in * 8, 1024),
@@ -31,11 +31,13 @@ class VisualNet(nn.Module):
 			nn.Dropout(),
 		)
 		self.fc7_fusion = nn.Sequential(
-			nn.Linear(1024 + out_ch, 1024),
+#nn.Linear(1024 + out_ch, 1024),
+			nn.Linear(4 * 4 * local_in * 8 + in_ch, 1024),
 			nn.ReLU(True),
 			nn.Dropout(),
 		)
-		self._initialize_weights()
+		if not resume:
+			self._initialize_weights()
 
 		self.conv5_global = nn.Sequential(
 			*list(resnet.children())[6:9]
@@ -46,10 +48,10 @@ class VisualNet(nn.Module):
 
 		g = self.conv5_global(conv4)
 		g = g.view(g.size(0), -1)
-		g = self.fc6_global(g)
+#g = self.fc6_global(g)
 
 		l = pool5.view(pool5.size(0), -1)
-		l = self.fc6_local(l)
+#l = self.fc6_local(l)
 		
 		g = torch.cat((g,l),1)
 		g = self.fc7_fusion(g)
@@ -72,17 +74,17 @@ class VisualNet(nn.Module):
 				m.bias.data.zero_()
 
 
-def visualnet(architect, types):
+def visualnet(resume, architect, types):
 	if architect == 'resnet50':
-		model = VisualNet(architect, types, models.resnet50(pretrained=True))
+		model = VisualNet(resume, architect, types, models.resnet50(pretrained=True))
 	elif architect == 'resnet101':
-		model = VisualNet(architect, types, models.resnet101(pretrained=True))
+		model = VisualNet(resume, architect, types, models.resnet101(pretrained=True))
 	elif architect == 'resnet152':
-		model = VisualNet(architect, types, models.resnet152(pretrained=True))
+		model = VisualNet(resume, architect, types, models.resnet152(pretrained=True))
 	elif architect == 'resnet34':
-		model = VisualNet(architect, types, models.resnet34(pretrained=True))
+		model = VisualNet(resume, architect, types, models.resnet34(pretrained=True))
 	else:
-		model = VisualNet(architect, types, models.resnet18(pretrained=True))
+		model = VisualNet(resume, architect, types, models.resnet18(pretrained=True))
 	
 	return model
 

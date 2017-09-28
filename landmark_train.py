@@ -17,6 +17,8 @@ import torch.backends.cudnn as cudnn
 from data.landmark_loader import ImageFolder
 from models.LandmarkNet import landmarknet
 import random
+from utils.drawing import Drawing
+
 # Training settings
 parser = argparse.ArgumentParser(description='Visual Search')
 parser.add_argument('data', metavar = 'DIR',help = 'path to dataset')
@@ -153,6 +155,10 @@ def validate(val_loader, model, clothes_type):
 
 			# compute output
 			collar_out, sleeve_out, hem_out, _ = model(input_var)
+			
+			for img_path, collar_x, collar_y in zip(path,collar_out):
+				print(img_path, collar_x, collar_y)
+				
 
 	        # Answers
 			collar = Variable(collar).float().cuda(async=True)
