@@ -15,41 +15,43 @@ from torchvision import transforms
 from torch.autograd import Variable
 import torch.backends.cudnn as cudnn
 from data.landmark_loader import ImageFolder
-from models.LandmarkNet import landmarknet
 import random
 from utils.drawing import Drawing
 from PIL import Image
 import socket
 import struct
 import cv2
-from models.Res_Deeplab import Res_Deeplab
+from models.LandmarkNet_Deep import Res_Deeplab
+from utils.loss import CrossEntropy2d
 
 TCP_IP = '10.214.35.36'
 TCP_PORT = 5005
 BUFFER_SIZE = 1024
 RECV_PATH = '/home/jlee/VisualNet/received_img.jpg'
+IMG_SIZE = 224
+IGNORE_LABEL = -1
 
 # Training settings
 parser = argparse.ArgumentParser(description='Visual Search')
 parser.add_argument('data', metavar = 'DIR',help = 'path to dataset')
-parser.add_argument('--batch-size', type=int, default=64, metavar='N',
+parser.add_argument('--batch-size', type=int, default=32, metavar='N',
                     help='input batch size for training (default: 64)')
 parser.add_argument('--epochs', type=int, default=200, metavar='N',
                     help='number of epochs to train (default: 100)')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N',
                     help='number of start epoch (default: 1)')
-parser.add_argument('--lr', type=float, default=0.002, metavar='LR',
-                    help='learning rate (default: 0.002)')
+parser.add_argument('--lr', type=float, default=2.5e-4, metavar='LR',
+                    help='learning rate (default: 2.5e-4)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='enables CUDA training')
 parser.add_argument('--resume', default='', type=str,
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--workers', type = int, default = 8, metavar = 'N',
 					help='number of works for data londing')
-parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,	metavar='W', 
-					help='weight decay (default: 1e-4)')
-parser.add_argument('--print-freq', '-p', default=100, type=int,
-					metavar='N', help='print frequency (default: 100)')
+parser.add_argument('--wd', default=0.0005, type=float, metavar='WD',
+					help='weight decay (default:0.0005)')
+parser.add_argument('--print-freq', '-p', default=10, type=int,
+					metavar='N', help='print frequency (default: 10)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
 					help='evaluate model on validation set')
 parser.add_argument('-a', '--arch', default='resnet50', type=str,
@@ -67,18 +69,19 @@ def main():
 	args = parser.parse_args()
 	data_path = args.data
 	args.cuda = not args.no_cuda and torch.cuda.is_available()
-	torch.manual_seed(random.randint(1, 10000))
+#torch.manual_seed(random.randint(1, 10000))
 	pin = True
 	best_dist = 100.0
 
 	if args.cuda:
 		print("GPU Mode")
-		torch.cuda.manual_seed(random.randint(1, 10000))
+		#torch.cuda.manual_seed(random.randint(1, 10000))
 	else:
 		pin = False
 		print("CPU Mode")
 	
-	model = landmarknet(args.arch, args.clothes)
+	model = Res_Deeplab(num_classes=7)
+
 	if args.cuda:
 		model = torch.nn.DataParallel(model).cuda()
 
@@ -95,10 +98,11 @@ def main():
 		else:
 			print("=> no checkpoint found at '{}'".format(args.resume))
 
+	
 	normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 	trans = transforms.Compose([
-					transforms.Scale(320),
-					transforms.CenterCrop(320),
+					transforms.Scale(IMG_SIZE),
+					transforms.CenterCrop(IMG_SIZE),
 					transforms.ToTensor(),
 					normalize,
 	])
@@ -112,10 +116,6 @@ def main():
 	print("Complete Validation Data loading(%s)" % len(val_data))
 	
 	#TEST
-	interp = nn.Upsample(size=(320, 320), mode='bilinear')
-	model_test = Res_Deeplab(num_classes = 2)
-	model_test.train()
-	model_test.cuda()
 
 	if args.evaluate:
 		if args.test:
@@ -138,9 +138,6 @@ def main():
 				input_tensor = torch.unsqueeze(trans(input),0)
 
 				input_var = Variable(input_tensor).cuda()
-
-				#TEST
-				print(interp(model_test(input_var)))
 
 				collar_out, sleeve_out, hem_out, _ = model(input_var)
 				c = collar_out.data.cpu().tolist()[0]
@@ -180,27 +177,22 @@ def main():
 
 	print("Complete Data loading(%s)" % len(image_data))
 
+	#criterion = nn.L1Loss().cuda()
 	params = filter(lambda p: p.requires_grad, model.parameters())
-	criterion = nn.L1Loss().cuda()
-	optimizer = torch.optim.Adagrad(params, lr = args.lr, weight_decay = args.weight_decay)
-
+	optimizer = torch.optim.Adagrad(params, lr = args.lr, weight_decay = args.wd)
 	for epoch in range(args.start_epoch, args.epochs):
-		adjust_learning_rate(optimizer, epoch)
 		# train for one epoch
-		train(image_data, model, criterion, optimizer, epoch, args.clothes)
+		train(image_data, model, optimizer, epoch, args.clothes)
 		# evaluate on validation set
-		dist = validate(val_data, model, args.clothes)
-
+		validate(val_data, model, args.clothes)
 	    # remember best prec@1 and save checkpoint
-		is_best = dist < best_dist
-		best_dist = min(dist, best_dist)
+#is_best = dist < best_dist
+#		best_dist = min(dist, best_dist)
 		save_checkpoint({
 			'epoch': epoch + 1,
 			'arch': args.arch,
-			'clothes_type':args.clothes,
 			'state_dict': model.state_dict(),
-			'best_distance': best_dist,
-		}, is_best)
+		}, True)
 
 def validate(val_loader, model, clothes_type):
 	batch_time = AverageMeter()
@@ -211,17 +203,17 @@ def validate(val_loader, model, clothes_type):
 	model.eval()
 	end = time.time()
 	d = Drawing()
+	interp = nn.Upsample(size=(IMG_SIZE,IMG_SIZE), mode='bilinear')
+
 	if clothes_type == 0:
 		for i, (input, collar, sleeve, hem, path) in enumerate(val_loader):
+			# measure data loading time
 			data_time.update(time.time() - end)
 			input_var = Variable(input)
-			# compute output
-			collar_out, sleeve_out, hem_out, _ = model(input_var)
-			collar_list = collar_out.data.cpu().tolist()
-			sleeve_list = sleeve_out.data.cpu().tolist()
-			hem_list = hem_out.data.cpu().tolist()
-			
+
+			pred = interp(model(input_var))
 			# drawing landmark point on images
+			"""
 			if args.draw:
 				for img_path, c, s, h in zip(path,collar_list,sleeve_list,hem_list):
 					img = Image.open(args.data + img_path)
@@ -229,22 +221,19 @@ def validate(val_loader, model, clothes_type):
 					d.draw_landmark_point(args.data + img_path, [c[0]*width,c[1]*height,c[2]*width,c[3]*height,
 																s[0]*width,s[1]*height,s[2]*width,s[3]*height,
 																h[0]*width,h[1]*height,h[2]*width,h[3]*height])
-
+			"""
 	        # Answers
-			collar = Variable(collar).float().cuda(async=True)
-			sleeve = Variable(sleeve).float().cuda(async=True)
-			hem = Variable(hem).float().cuda(async=True)
-			dist = accuracy((collar[:,2:6],sleeve[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,hem_out))
-			distance.update(dist.data[0], 1)
-#print(path[0],sleeve[0],sleeve_out[0])
+			#dist = accuracy((collar[:,2:6],sleeve[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,hem_out))
+			#distance.update(dist.data[0], 1)
+			#print(path[0],sleeve[0],sleeve_out[0])
+			# measure elapsed time
 			batch_time.update(time.time() - end)
 			end = time.time()
-
 			if i % args.print_freq == 0:
 				print('Epoch: [{0}/{1}]\t'
 						'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-						'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-						'Distances {dist.val:.4f} ({dist.avg:.4f})'.format(i, len(val_loader), batch_time=batch_time,data_time=data_time, dist = distance))
+						'Data {data_time.val:.3f} ({data_time.avg:.3f})'
+						.format(i, len(val_loader), batch_time=batch_time,data_time=data_time))
 
 	elif clothes_type == 1:
 		for i, (input, waistline, hem, path) in enumerate(val_loader):
@@ -298,7 +287,7 @@ def validate(val_loader, model, clothes_type):
 	print('Test Result: Distances ({dist.avg:.4f})'.format(dist = distance))
 	return distance.avg
 
-def train(train_loader, model, criterion, optimizer, epoch, clothes_type):
+def train(train_loader, model, optimizer, epoch, clothes_type):
 	'''
 	In clothes type, 
 	"1" represents upper-body clothes, 
@@ -317,6 +306,10 @@ def train(train_loader, model, criterion, optimizer, epoch, clothes_type):
 	distance = AverageMeter()
 	# switch to train mode
 	model.train()
+
+	adjust_learning_rate(optimizer, epoch)
+	
+	interp = nn.Upsample(size=(IMG_SIZE,IMG_SIZE), mode='bilinear')
 	end = time.time()
 	if clothes_type == 0:
 		for i, (input, collar, sleeve, hem, path) in enumerate(train_loader):
@@ -324,8 +317,13 @@ def train(train_loader, model, criterion, optimizer, epoch, clothes_type):
 			data_time.update(time.time() - end)
 			input_var = Variable(input)
 
-			collar_out, sleeve_out, hem_out, _ = model(input_var)
+			pred = interp(model(input_var))
+			optimizer.zero_grad()
+			labels = make_labels([collar,sleeve,hem])
+
+			loss = loss_calc(pred, labels)
 			# Answers
+			"""
 			collar = Variable(collar).float().cuda(async=True)
 			sleeve = Variable(sleeve).float().cuda(async=True)
 			hem = Variable(hem).float().cuda(async=True)
@@ -339,22 +337,22 @@ def train(train_loader, model, criterion, optimizer, epoch, clothes_type):
 			dist = accuracy((collar[:,2:6],sleeve[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,hem_out))
 			losses.update(loss.data[0], input.size(0))
 			distance.update(dist.data[0], 1)
+			"""
 
+			losses.update(loss.data[0], input.size(0))
 			# compute gradient and do SGD step
-			optimizer.zero_grad()
 			loss.backward()
 			optimizer.step()
+			
 
 			# measure elapsed time
 			batch_time.update(time.time() - end)
 			end = time.time()
-
 			if i % args.print_freq == 0:
 				print('Epoch: [{0}][{1}/{2}]\t'
 						'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
 						'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-						'Location Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-						'Distances {dist.val:.4f} ({dist.avg:.4f})'.format(epoch, i, len(train_loader), batch_time=batch_time,data_time=data_time, loss = losses, dist = distance))
+						'Location Loss {loss.val:.4f} ({loss.avg:.4f})'.format(epoch, i, len(train_loader), batch_time=batch_time,data_time=data_time, loss = losses))
 
 	elif clothes_type == 1:
 		for i, (input, waistline, hem, path) in enumerate(train_loader):
@@ -455,7 +453,6 @@ class AverageMeter(object):
 		self.sum += val * n
 		self.count += n
 		self.avg = self.sum / self.count
-
 def adjust_learning_rate(optimizer, epoch):
 	"""Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
 	lr = args.lr * (0.5 ** (epoch // 10))
@@ -498,6 +495,44 @@ def send_file(client):
 
 	client.shutdown(socket.SHUT_WR)
 	print("Done Sending")
+
+def make_labels(raw):
+	target = torch.zeros(len(raw[0]),IMG_SIZE,IMG_SIZE)
+	target.fill_(6)
+
+	for coords in raw:
+		i = 0
+		for j,coord in enumerate(coords):
+			if coord[0] == 0: # 주의! 찾을 수 없음이 255가 아닌지 살펴 볼 것!
+				x = int(coord[2]*IMG_SIZE)
+				y = int(coord[3]*IMG_SIZE)
+				if IMG_SIZE == x:
+					x = IMG_SIZE - 1
+				if IMG_SIZE == y:
+					y = IMG_SIZE - 1
+
+				target[j][x][y] = i
+			if coord[1] == 0:
+				x = int(coord[4]*IMG_SIZE)
+				y = int(coord[5]*IMG_SIZE)
+				if IMG_SIZE == x:
+					x = IMG_SIZE - 1
+				if IMG_SIZE == y:
+					y = IMG_SIZE - 1
+
+				target[j][x][y] = i + 1
+
+		i += 2
+
+	return target
+
+def loss_calc(pred, label):
+	# out shape batch_size x channels x h x w -> batch_size x channels x h x w
+	# label shape h x w x 1 x batch_size  -> batch_size x 1 x h x w
+	label = Variable(label.long()).cuda()
+	criterion = CrossEntropy2d().cuda()
+	
+	return criterion(pred, label)
 
 
 if __name__ == '__main__':

@@ -14,7 +14,7 @@ class LandmarkNet(nn.Module):
 		else:
 			in_ch = 2048
 
-		out_ch = 4096
+		out_ch = 2048
 
 		self.landmark_collar = nn.Sequential(
 			nn.Linear(in_ch, out_ch),

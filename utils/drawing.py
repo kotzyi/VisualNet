@@ -3,13 +3,22 @@ import numpy as np
 
 class Drawing():
 	def __init__(self):
-		self.dot_color = (0,0,255)
-		self.radius = 5
+		self.colors = [(0,0,255),(255,0,0),(0,255,0),(255,255,0)]
 
-	def draw_dot(self, img_path, x, y):
+		self.radius = 5
+		self.counter = 0
+
+	def draw_landmark_point(self, img_path, points):
 		img = cv2.imread(img_path)
-		img = cv2.circle(img, (x,y), self.radius, self.dot_color, -1)
-		cv2.imwrite("new_" + img_path+".jpg", img)
+
+		for i, landmark in enumerate(zip(points[::2], points[1::2])):
+			if landmark[0] > 0 and landmark[1] > 0:
+				img = cv2.circle(img, (int(landmark[0]),int(landmark[1])), self.radius, self.colors[0], -1)
+			
+			#if self.counter % 2 == 0: i += 1
+
+		cv2.imwrite("img//"+str(self.counter)+".jpg", img)
+		self.counter += 1
 
 	def save_img(self, img, img_path):
 		cv2.imwrite("new_" + img_path, img)

@@ -32,9 +32,9 @@ class ImageFolder(data.Dataset):
 		self.clothes = clothes
 
 		if is_train:
-			self.data_frame = pd.read_table(root+"/Anno/"+str(clothes)+"/list_landmarks_train_all.txt",sep="\s+")
+			self.data_frame = pd.read_table(root+"/Anno/"+str(clothes)+"/list_landmarks_train.txt",sep="\s+")
 		else:
-			self.data_frame = pd.read_table(root+"/Anno/"+str(clothes)+"/list_landmarks_test_all.txt",sep="\s+")
+			self.data_frame = pd.read_table(root+"/Anno/"+str(clothes)+"/list_landmarks_test.txt",sep="\s+")
 
 		self.image_path = self.data_frame['image_name'].values.tolist()
 		self.clothes_type = self.data_frame['clothes_type'].values.tolist()
