@@ -8,12 +8,12 @@ class Drawing():
 		self.radius = 5
 		self.counter = 0
 
-	def draw_landmark_point(self, img_path, points):
+	def draw_landmark_point(self, img_path, color, points):
 		img = cv2.imread(img_path)
 
 		for i, landmark in enumerate(zip(points[::2], points[1::2])):
 			if landmark[0] > 0 and landmark[1] > 0:
-				img = cv2.circle(img, (int(landmark[0]),int(landmark[1])), self.radius, self.colors[0], -1)
+				img = cv2.circle(img, (int(landmark[0]),int(landmark[1])), self.radius, color, -1)
 			
 			#if self.counter % 2 == 0: i += 1
 

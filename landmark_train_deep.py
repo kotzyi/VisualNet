@@ -29,7 +29,9 @@ TCP_PORT = 5005
 BUFFER_SIZE = 1024
 RECV_PATH = '/home/jlee/VisualNet/received_img.jpg'
 IMG_SIZE = 224
-IGNORE_LABEL = -1
+IGNORE_LABEL = 6
+BLOB_SIZE = 1
+CLASSN = 7
 
 # Training settings
 parser = argparse.ArgumentParser(description='Visual Search')
@@ -40,7 +42,7 @@ parser.add_argument('--epochs', type=int, default=200, metavar='N',
                     help='number of epochs to train (default: 100)')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N',
                     help='number of start epoch (default: 1)')
-parser.add_argument('--lr', type=float, default=2.5e-4, metavar='LR',
+parser.add_argument('--lr', type=float, default=0.005, metavar='LR',
                     help='learning rate (default: 2.5e-4)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='enables CUDA training')
@@ -80,7 +82,7 @@ def main():
 		pin = False
 		print("CPU Mode")
 	
-	model = Res_Deeplab(num_classes=7)
+	model = Res_Deeplab(num_classes=CLASSN)
 
 	if args.cuda:
 		model = torch.nn.DataParallel(model).cuda()
@@ -91,8 +93,6 @@ def main():
 			print("=> loading checkpoint '{}'".format(args.resume))
 			checkpoint = torch.load(args.resume)
 			args.start_epoch = checkpoint['epoch']
-			args.clothes = checkpoint['clothes_type']
-			best_dist = checkpoint['best_distance']
 			model.load_state_dict(checkpoint['state_dict'])
 			print("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
 		else:
@@ -106,6 +106,7 @@ def main():
 					transforms.ToTensor(),
 					normalize,
 	])
+	
 	val_data = torch.utils.data.DataLoader(
 		ImageFolder(data_path,False,args.clothes,trans),
 		batch_size = args.batch_size,
@@ -113,6 +114,9 @@ def main():
 		num_workers = args.workers,
 		pin_memory = pin,
 	)
+	
+	interp = nn.Upsample(size=(IMG_SIZE,IMG_SIZE), mode='bilinear')
+
 	print("Complete Validation Data loading(%s)" % len(val_data))
 	
 	#TEST
@@ -163,7 +167,7 @@ def main():
 				client.close()
 				
 		else:
-			validate(val_data, model, args.clothes)
+			validate(val_data, model, interp, args.clothes)
 
 		return
 
@@ -182,9 +186,9 @@ def main():
 	optimizer = torch.optim.Adagrad(params, lr = args.lr, weight_decay = args.wd)
 	for epoch in range(args.start_epoch, args.epochs):
 		# train for one epoch
-		train(image_data, model, optimizer, epoch, args.clothes)
+		train(image_data, model, interp, optimizer, epoch, args.clothes)
 		# evaluate on validation set
-		validate(val_data, model, args.clothes)
+#validate(val_data, model, interp, args.clothes)
 	    # remember best prec@1 and save checkpoint
 #is_best = dist < best_dist
 #		best_dist = min(dist, best_dist)
@@ -192,9 +196,9 @@ def main():
 			'epoch': epoch + 1,
 			'arch': args.arch,
 			'state_dict': model.state_dict(),
-		}, True)
+		}, False)
 
-def validate(val_loader, model, clothes_type):
+def validate(val_loader, model, interp, clothes_type):
 	batch_time = AverageMeter()
 	data_time = AverageMeter()
 	losses = AverageMeter()
@@ -203,7 +207,6 @@ def validate(val_loader, model, clothes_type):
 	model.eval()
 	end = time.time()
 	d = Drawing()
-	interp = nn.Upsample(size=(IMG_SIZE,IMG_SIZE), mode='bilinear')
 
 	if clothes_type == 0:
 		for i, (input, collar, sleeve, hem, path) in enumerate(val_loader):
@@ -212,16 +215,25 @@ def validate(val_loader, model, clothes_type):
 			input_var = Variable(input)
 
 			pred = interp(model(input_var))
+			scores,coords,params = get_landmark(pred)
+#print(path[0],"         ", params[0][0], scores[0][0], coords[0][0],collar[0][2]*IMG_SIZE,collar[0][3]*IMG_SIZE)
+
 			# drawing landmark point on images
-			"""
 			if args.draw:
-				for img_path, c, s, h in zip(path,collar_list,sleeve_list,hem_list):
+				for img_path, c, s, h in zip(path,collar,sleeve,hem):
 					img = Image.open(args.data + img_path)
 					width,height = img.size
-					d.draw_landmark_point(args.data + img_path, [c[0]*width,c[1]*height,c[2]*width,c[3]*height,
-																s[0]*width,s[1]*height,s[2]*width,s[3]*height,
-																h[0]*width,h[1]*height,h[2]*width,h[3]*height])
-			"""
+					d.draw_landmark_point(args.data + img_path, (0,0,255), [c[2]*width,c[3]*height,c[4]*width,c[5]*height,
+																s[2]*width,s[3]*height,s[4]*width,s[5]*height,
+																h[2]*width,h[3]*height,h[4]*width,h[5]*height])
+			if args.draw:
+				for img_path, coord in zip(path, coords):
+					img = Image.open(args.data + img_path)
+					d.draw_landmark_point(args.data + img_path, (0,255,0), 
+											[coord[0][0],coord[0][1],coord[1][0],coord[1][1],
+											coord[2][0],coord[2][1],coord[3][0],coord[3][1],
+											coord[4][0],coord[4][1],coord[5][0],coord[5][1]])
+
 	        # Answers
 			#dist = accuracy((collar[:,2:6],sleeve[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,hem_out))
 			#distance.update(dist.data[0], 1)
@@ -287,7 +299,7 @@ def validate(val_loader, model, clothes_type):
 	print('Test Result: Distances ({dist.avg:.4f})'.format(dist = distance))
 	return distance.avg
 
-def train(train_loader, model, optimizer, epoch, clothes_type):
+def train(train_loader, model, interp, optimizer, epoch, clothes_type):
 	'''
 	In clothes type, 
 	"1" represents upper-body clothes, 
@@ -309,7 +321,6 @@ def train(train_loader, model, optimizer, epoch, clothes_type):
 
 	adjust_learning_rate(optimizer, epoch)
 	
-	interp = nn.Upsample(size=(IMG_SIZE,IMG_SIZE), mode='bilinear')
 	end = time.time()
 	if clothes_type == 0:
 		for i, (input, collar, sleeve, hem, path) in enumerate(train_loader):
@@ -322,23 +333,10 @@ def train(train_loader, model, optimizer, epoch, clothes_type):
 			labels = make_labels([collar,sleeve,hem])
 
 			loss = loss_calc(pred, labels)
-			# Answers
-			"""
-			collar = Variable(collar).float().cuda(async=True)
-			sleeve = Variable(sleeve).float().cuda(async=True)
-			hem = Variable(hem).float().cuda(async=True)
 
-			hem_loss = criterion(hem_out, hem[:,2:6])
-			collar_loss =criterion(collar_out, collar[:,2:6])
-			sleeve_loss = criterion(sleeve_out, sleeve[:,2:6])
-
-			loss = hem_loss + collar_loss + sleeve_loss
-
-			dist = accuracy((collar[:,2:6],sleeve[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,hem_out))
-			losses.update(loss.data[0], input.size(0))
-			distance.update(dist.data[0], 1)
-			"""
-
+#scores,coords = get_landmark(pred)
+#print(scores[0][0], coords[0][0],collar[0][2]*IMG_SIZE,collar[0][3]*IMG_SIZE)
+			
 			losses.update(loss.data[0], input.size(0))
 			# compute gradient and do SGD step
 			loss.backward()
@@ -454,8 +452,8 @@ class AverageMeter(object):
 		self.count += n
 		self.avg = self.sum / self.count
 def adjust_learning_rate(optimizer, epoch):
-	"""Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-	lr = args.lr * (0.5 ** (epoch // 10))
+	"""Sets the learning rate to the initial LR decayed by 7 every 5 epochs"""
+	lr = args.lr * (0.7 ** (epoch // 5))
 	for param_group in optimizer.param_groups:
 		param_group['lr'] = lr
 
@@ -498,31 +496,30 @@ def send_file(client):
 
 def make_labels(raw):
 	target = torch.zeros(len(raw[0]),IMG_SIZE,IMG_SIZE)
-	target.fill_(6)
+	target.fill_(IGNORE_LABEL)
 
+	label = 0
 	for coords in raw:
-		i = 0
 		for j,coord in enumerate(coords):
-			if coord[0] == 0: # 주의! 찾을 수 없음이 255가 아닌지 살펴 볼 것!
-				x = int(coord[2]*IMG_SIZE)
-				y = int(coord[3]*IMG_SIZE)
-				if IMG_SIZE == x:
-					x = IMG_SIZE - 1
-				if IMG_SIZE == y:
-					y = IMG_SIZE - 1
+			for k in range(2):
+				if coord[k] == 0:
+					x = int(coord[2 * k + 2]*IMG_SIZE)
+					y = int(coord[2 * k + 3]*IMG_SIZE)
+				
+					if IMG_SIZE == x:
+						x = IMG_SIZE - 1
+					if IMG_SIZE == y:
+						y = IMG_SIZE - 1
+				
+					for a in range(BLOB_SIZE):
+						for b in range(BLOB_SIZE):
+							px = x + a - int(BLOB_SIZE / 2)
+							py = y + b - int(BLOB_SIZE / 2)
+							if px >= 0 and py >= 0 and px < IMG_SIZE and py < IMG_SIZE:
+								target[j][px][py] = label + k
 
-				target[j][x][y] = i
-			if coord[1] == 0:
-				x = int(coord[4]*IMG_SIZE)
-				y = int(coord[5]*IMG_SIZE)
-				if IMG_SIZE == x:
-					x = IMG_SIZE - 1
-				if IMG_SIZE == y:
-					y = IMG_SIZE - 1
 
-				target[j][x][y] = i + 1
-
-		i += 2
+		label += 2
 
 	return target
 
@@ -534,6 +531,53 @@ def loss_calc(pred, label):
 	
 	return criterion(pred, label)
 
+def get_landmark(data):
+	scores = []
+	coords = []
+	params = []
+	for target in data:
+		score = []
+		coord = []
+		param = []
+		for cls in target:
+			max_val = -100
+			avg_val = 0
+			sum_val = 0
+			min_val = 10000
+			x = -1
+			y = -1
+			matrix = cls.data.cpu().tolist()
+			k = 0
+			for i in range(IMG_SIZE):
+				for j in range(IMG_SIZE):
+					sum_val += matrix[i][j]
+					k += 1
+					if matrix[i][j] > max_val:
+						max_val = matrix[i][j]
+						x = i
+						y = j
+					if matrix[i][j] < min_val:
+						min_val = matrix[i][j]
+			avg_val = sum_val / k
+			score.append(max_val)
+			coord.append([x,y])
+			param.append([avg_val,min_val])
+		"""
+		for i in range(data.size(1)): #coord
+			(tx,ty) = coord[i]
+			for j in range(data.size(1) - 1): #score
+				t_score = score[i]
+				val = target[j][tx][ty].data[0]
+
+				if score[i] < val:
+					coord[i] = [-1,-1,j]
+					break
+		"""
+		scores.append(score)
+		coords.append(coord)
+		params.append(param)
+
+	return scores,coords,params
 
 if __name__ == '__main__':
 	main()    

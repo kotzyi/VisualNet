@@ -22,7 +22,6 @@ from PIL import Image
 import socket
 import struct
 import cv2
-from models.Res_Deeplab import Res_Deeplab
 
 TCP_IP = '10.214.35.36'
 TCP_PORT = 5005
@@ -110,12 +109,8 @@ def main():
 		pin_memory = pin,
 	)
 	print("Complete Validation Data loading(%s)" % len(val_data))
-	
 	#TEST
 	interp = nn.Upsample(size=(320, 320), mode='bilinear')
-	model_test = Res_Deeplab(num_classes = 2)
-	model_test.train()
-	model_test.cuda()
 
 	if args.evaluate:
 		if args.test:
@@ -189,8 +184,8 @@ def main():
 		# train for one epoch
 		train(image_data, model, criterion, optimizer, epoch, args.clothes)
 		# evaluate on validation set
-		dist = validate(val_data, model, args.clothes)
-
+#dist = validate(val_data, model, args.clothes)
+		dist = 0
 	    # remember best prec@1 and save checkpoint
 		is_best = dist < best_dist
 		best_dist = min(dist, best_dist)
@@ -200,7 +195,7 @@ def main():
 			'clothes_type':args.clothes,
 			'state_dict': model.state_dict(),
 			'best_distance': best_dist,
-		}, is_best)
+		}, False)
 
 def validate(val_loader, model, clothes_type):
 	batch_time = AverageMeter()
@@ -226,7 +221,8 @@ def validate(val_loader, model, clothes_type):
 				for img_path, c, s, h in zip(path,collar_list,sleeve_list,hem_list):
 					img = Image.open(args.data + img_path)
 					width,height = img.size
-					d.draw_landmark_point(args.data + img_path, [c[0]*width,c[1]*height,c[2]*width,c[3]*height,
+					d.draw_landmark_point(args.data + img_path, (0,0,255), 
+																[c[0]*width,c[1]*height,c[2]*width,c[3]*height,
 																s[0]*width,s[1]*height,s[2]*width,s[3]*height,
 																h[0]*width,h[1]*height,h[2]*width,h[3]*height])
 
