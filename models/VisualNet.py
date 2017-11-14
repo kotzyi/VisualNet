@@ -12,10 +12,12 @@ class VisualNet(nn.Module):
 		self.types = types
 		
 		if architect in ['resnet18','resnet34']:
-			local_in = 128
+			#local_in = 128
+			local_in = 64
 			in_ch = 512
 		else:
-			local_in = 512
+			#local_in = 512
+			local_in = 256
 			in_ch = 2048
 		out_ch = 1024
 
@@ -40,7 +42,7 @@ class VisualNet(nn.Module):
 			self._initialize_weights()
 
 		self.conv5_global = nn.Sequential(
-			*list(resnet.children())[6:9]
+			*list(resnet.children())[5:9] # should changed 5:9 or 6:9
 		)
 
 

@@ -3,18 +3,19 @@ import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 import torchvision.models as models
 import math
+import models.DRN as dilated_network
 
 class LandmarkNet(nn.Module):
 	def __init__(self, architect, types, resnet):
 		super(LandmarkNet, self).__init__()
 		self.types = types
 
-		if architect in ['resnet18','resnet34']:
+		if architect in ['resnet18','resnet34','drn_22_d','drn_38_d','drn_54_d','drn_105_d']:
 			in_ch = 512
 		else:
 			in_ch = 2048
 
-		out_ch = 2048
+		out_ch = 4096 #2048
 
 		self.landmark_collar = nn.Sequential(
 			nn.Linear(in_ch, out_ch),
@@ -43,19 +44,19 @@ class LandmarkNet(nn.Module):
 		self._initialize_weights()
 
 		# For Transfer Learning
-		self.features = nn.Sequential(
-			*list(resnet.children())[:6]
+		self.features = nn.Sequential( # Must be changed when it's used for TripletTraining. 5->6 or 6->5 -> 4
+			*list(resnet.children())[:4]
 		)
 
-		self.conv5 = nn.Sequential(
-			*list(resnet.children())[6:9]
+		self.conv5 = nn.Sequential( #Must be changed when it's used for triplet training. 5:9 -> 6:9  when DRN 5:9 -> 5:10 -> 4:10
+			*list(resnet.children())[4:10]
 		)
 		#for param in self.features.parameters():
 		#			param.requires_grad = False
 
 	def forward(self, x):
 		feature = self.features(x)
-		l = self.conv5(feature) 
+		l = self.conv5(feature)
 		l = l.view(l.size(0), -1)
 
 		hem = self.landmark_hem(l)
@@ -98,11 +99,19 @@ def landmarknet(architect, types):
 		model = LandmarkNet(architect, types, models.resnet152(pretrained=True))
 	elif architect == 'resnet34':
 		model = LandmarkNet(architect, types, models.resnet34(pretrained=True))
+	elif architect == 'drn_22_d':
+		model = LandmarkNet(architect, types, dilated_network.drn_d_22(pretrained=True))
+	elif architect == 'drn_38_d':
+		model = LandmarkNet(architect, types, dilated_network.drn_d_38(pretrained=True))
+	elif architect == 'drn_54_d':
+		model = LandmarkNet(architect, types, dilated_network.drn_d_54(pretrained=True))
+	elif architect == 'drn_105_d':
+		model = LandmarkNet(architect, types, dilated_network.drn_d_105(pretrained=True))
 	else:
 		model = LandmarkNet(architect, types, models.resnet18(pretrained=True))
 
 	return model
 
-if __name__ == '__main__':
-	vsnet()
+#if __name__ == '__main__':
+#landmarknet()
 

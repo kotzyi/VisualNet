@@ -26,6 +26,7 @@ import cv2
 TCP_IP = '10.214.35.36'
 TCP_PORT = 5005
 BUFFER_SIZE = 1024
+IMG_SIZE = 256
 RECV_PATH = '/home/jlee/VisualNet/received_img.jpg'
 
 # Training settings
@@ -33,12 +34,14 @@ parser = argparse.ArgumentParser(description='Visual Search')
 parser.add_argument('data', metavar = 'DIR',help = 'path to dataset')
 parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
-parser.add_argument('--epochs', type=int, default=200, metavar='N',
+parser.add_argument('--epochs', type=int, default=100, metavar='N',
                     help='number of epochs to train (default: 100)')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N',
                     help='number of start epoch (default: 1)')
-parser.add_argument('--lr', type=float, default=0.002, metavar='LR',
+parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                     help='learning rate (default: 0.002)')
+parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
+					help='momentum')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='enables CUDA training')
 parser.add_argument('--resume', default='', type=str,
@@ -52,7 +55,7 @@ parser.add_argument('--print-freq', '-p', default=100, type=int,
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
 					help='evaluate model on validation set')
 parser.add_argument('-a', '--arch', default='resnet50', type=str,
-					help='Architecture of network for training in resnet18,34,50,101,152')
+					help='Architecture of network for training in resnet18,34,50,101,152, drn 22d,38d,')
 parser.add_argument('-c', '--clothes', default=0, type=int,
 					help='Clothes type:0 - upper body, 1 - lower body, 2 - full body')
 parser.add_argument('-d', '--draw', action='store_true', default = False,
@@ -66,13 +69,12 @@ def main():
 	args = parser.parse_args()
 	data_path = args.data
 	args.cuda = not args.no_cuda and torch.cuda.is_available()
-	torch.manual_seed(random.randint(1, 10000))
+	#torch.manual_seed(random.randint(1, 10000))
 	pin = True
 	best_dist = 100.0
 
 	if args.cuda:
 		print("GPU Mode")
-		torch.cuda.manual_seed(random.randint(1, 10000))
 	else:
 		pin = False
 		print("CPU Mode")
@@ -96,8 +98,8 @@ def main():
 
 	normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 	trans = transforms.Compose([
-					transforms.Scale(320),
-					transforms.CenterCrop(320),
+					transforms.Scale(IMG_SIZE),
+					transforms.CenterCrop(IMG_SIZE),
 					transforms.ToTensor(),
 					normalize,
 	])
@@ -110,7 +112,6 @@ def main():
 	)
 	print("Complete Validation Data loading(%s)" % len(val_data))
 	#TEST
-	interp = nn.Upsample(size=(320, 320), mode='bilinear')
 
 	if args.evaluate:
 		if args.test:
@@ -132,7 +133,7 @@ def main():
 				input = Image.open(RECV_PATH).convert('RGB')
 				input_tensor = torch.unsqueeze(trans(input),0)
 
-				input_var = Variable(input_tensor).cuda()
+				input_var = Variable(input_tensor,volatile =True).cuda()
 
 				#TEST
 				print(interp(model_test(input_var)))
@@ -175,17 +176,18 @@ def main():
 
 	print("Complete Data loading(%s)" % len(image_data))
 
-	params = filter(lambda p: p.requires_grad, model.parameters())
+	#params = filter(lambda p: p.requires_grad, model.parameters())
 	criterion = nn.L1Loss().cuda()
-	optimizer = torch.optim.Adagrad(params, lr = args.lr, weight_decay = args.weight_decay)
+	optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum,weight_decay=args.weight_decay)
+#optimizer = torch.optim.Adagrad(params, lr = args.lr, weight_decay = args.weight_decay)
 
 	for epoch in range(args.start_epoch, args.epochs):
 		adjust_learning_rate(optimizer, epoch)
 		# train for one epoch
 		train(image_data, model, criterion, optimizer, epoch, args.clothes)
 		# evaluate on validation set
-#dist = validate(val_data, model, args.clothes)
-		dist = 0
+		dist = validate(val_data, model, args.clothes)
+		#dist = 100
 	    # remember best prec@1 and save checkpoint
 		is_best = dist < best_dist
 		best_dist = min(dist, best_dist)
@@ -195,7 +197,7 @@ def main():
 			'clothes_type':args.clothes,
 			'state_dict': model.state_dict(),
 			'best_distance': best_dist,
-		}, False)
+		}, is_best)
 
 def validate(val_loader, model, clothes_type):
 	batch_time = AverageMeter()
@@ -209,7 +211,8 @@ def validate(val_loader, model, clothes_type):
 	if clothes_type == 0:
 		for i, (input, collar, sleeve, hem, path) in enumerate(val_loader):
 			data_time.update(time.time() - end)
-			input_var = Variable(input)
+			input_var = Variable(input, volatile=True)
+
 			# compute output
 			collar_out, sleeve_out, hem_out, _ = model(input_var)
 			collar_list = collar_out.data.cpu().tolist()
@@ -227,9 +230,9 @@ def validate(val_loader, model, clothes_type):
 																h[0]*width,h[1]*height,h[2]*width,h[3]*height])
 
 	        # Answers
-			collar = Variable(collar).float().cuda(async=True)
-			sleeve = Variable(sleeve).float().cuda(async=True)
-			hem = Variable(hem).float().cuda(async=True)
+			collar = Variable(collar,volatile =True).float().cuda(async=True)
+			sleeve = Variable(sleeve,volatile =True).float().cuda(async=True)
+			hem = Variable(hem,volatile =True).float().cuda(async=True)
 			dist = accuracy((collar[:,2:6],sleeve[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,hem_out))
 			distance.update(dist.data[0], 1)
 #print(path[0],sleeve[0],sleeve_out[0])
@@ -245,11 +248,11 @@ def validate(val_loader, model, clothes_type):
 	elif clothes_type == 1:
 		for i, (input, waistline, hem, path) in enumerate(val_loader):
 			data_time.update(time.time() - end)
-			input_var = Variable(input)
-			
+			input_var = Variable(input, volatile=True)
+
 			waistline_out, hem_out, _ = model(input_var)
-			waistline = Variable(waistline).float().cuda(async=True)
-			hem = Variable(hem).float().cuda(async=True)
+			waistline = Variable(waistline,volatile =True).float().cuda(async=True)
+			hem = Variable(hem,volatile =True).float().cuda(async=True)
 			print(path[0],waistline[0],waistline_out[0])
 			dist = accuracy((waistline[:,2:6],hem[:,2:6]),(waistline_out,hem_out))
 			distance.update(dist.data[0], 1)
@@ -267,15 +270,16 @@ def validate(val_loader, model, clothes_type):
 		for i, (input, collar, sleeve, waistline, hem, path) in enumerate(val_loader):
 			# measure data loading time
 			data_time.update(time.time() - end)
-			input_var = Variable(input)
+			input_var = Variable(input, volatile=True)
+
 			# compute output
 			collar_out, sleeve_out, waistline_out, hem_out, _ = model(input_var)
 
 			# Answers
-			collar = Variable(collar).float().cuda(async=True)
-			sleeve = Variable(sleeve).float().cuda(async=True)
-			waistline = Variable(waistline).float().cuda(async=True)
-			hem = Variable(hem).float().cuda(async=True)
+			collar = Variable(collar,volatile =True).float().cuda(async=True)
+			sleeve = Variable(sleeve,volatile =True).float().cuda(async=True)
+			waistline = Variable(waistline,volatile =True).float().cuda(async=True)
+			hem = Variable(hem,volatile =True).float().cuda(async=True)
 
 			dist = accuracy((collar[:,2:6],sleeve[:,2:6],waistline[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,waistline_out,hem_out))
 			distance.update(dist.data[0], 1)
@@ -322,9 +326,9 @@ def train(train_loader, model, criterion, optimizer, epoch, clothes_type):
 
 			collar_out, sleeve_out, hem_out, _ = model(input_var)
 			# Answers
-			collar = Variable(collar).float().cuda(async=True)
-			sleeve = Variable(sleeve).float().cuda(async=True)
-			hem = Variable(hem).float().cuda(async=True)
+			collar = Variable(collar).float().cuda()
+			sleeve = Variable(sleeve).float().cuda()
+			hem = Variable(hem).float().cuda()
 
 			hem_loss = criterion(hem_out, hem[:,2:6])
 			collar_loss =criterion(collar_out, collar[:,2:6])
@@ -361,8 +365,8 @@ def train(train_loader, model, criterion, optimizer, epoch, clothes_type):
 			waistline_out, hem_out, _ = model(input_var)
 
 			# Answers
-			waistline = Variable(waistline).float().cuda(async=True)
-			hem = Variable(hem).float().cuda(async=True)
+			waistline = Variable(waistline,volatile =True).float().cuda(async=True)
+			hem = Variable(hem,volatile =True).float().cuda(async=True)
 
 			hem_loss = criterion(hem_out, hem[:,2:6])
 			waistline_loss = criterion(waistline_out, waistline[:,2:6])
@@ -401,10 +405,10 @@ def train(train_loader, model, criterion, optimizer, epoch, clothes_type):
 			collar_out, sleeve_out, waistline_out, hem_out, _ = model(input_var)
 	
 			# Answers
-			collar = Variable(collar).float().cuda(async=True)
-			sleeve = Variable(sleeve).float().cuda(async=True)
-			waistline = Variable(waistline).float().cuda(async=True)
-			hem = Variable(hem).float().cuda(async=True)
+			collar = Variable(collar,volatile =True).float().cuda(async=True)
+			sleeve = Variable(sleeve,volatile =True).float().cuda(async=True)
+			waistline = Variable(waistline,volatile =True).float().cuda(async=True)
+			hem = Variable(hem,volatile =True).float().cuda(async=True)
 
 			hem_loss = criterion(hem_out, hem[:,2:6])
 			collar_loss =criterion(collar_out, collar[:,2:6])
@@ -454,7 +458,7 @@ class AverageMeter(object):
 
 def adjust_learning_rate(optimizer, epoch):
 	"""Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-	lr = args.lr * (0.5 ** (epoch // 10))
+	lr = args.lr * (0.1 ** (epoch // 20))
 	for param_group in optimizer.param_groups:
 		param_group['lr'] = lr
 

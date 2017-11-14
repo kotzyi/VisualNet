@@ -26,7 +26,8 @@ import pickle
 import sklearn.metrics.pairwise
 import scipy.spatial.distance
 
-conv_size = 28
+IMG_SIZE = 256
+WINDOW_SIZE = 3
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch Trainer for Triplet Loss of Rich Annotations')
@@ -85,12 +86,12 @@ def main():
 		print("CPU Mode")
 	
 	land_model = landmarknet(args.arch,args.clothes)
-	visual_model = visualnet(os.path.isfile(args.vis_load), args.arch,args.clothes)
+#visual_model = visualnet(os.path.isfile(args.vis_load), args.arch,args.clothes)
 
 	if args.cuda:
 		land_model = torch.nn.DataParallel(land_model).cuda()
-		visual_model = torch.nn.DataParallel(visual_model).cuda()
-		triplet_loss = nn.TripletMarginLoss(margin=20.0, p=2).cuda()
+#visual_model = torch.nn.DataParallel(visual_model).cuda()
+#		triplet_loss = nn.TripletMarginLoss(margin=20.0, p=2).cuda()
 
 	print("Model parameters are loaded")
 	
@@ -98,8 +99,8 @@ def main():
 	if args.land_load:
 		if os.path.isfile(args.land_load):
 			print("=> loading checkpoint '{}'".format(args.land_load))
-			args.start_epoch = checkpoint['epoch']
 			checkpoint = torch.load(args.land_load)
+			args.start_epoch = checkpoint['epoch']
 			args.clothes = checkpoint['clothes_type']
 			land_model.load_state_dict(checkpoint['state_dict'])
 			print("=> loaded checkpoint '{}' (epoch {})".format(args.land_load, checkpoint['epoch']))
@@ -107,7 +108,7 @@ def main():
 			print("=> no checkpoint found at '{}'".format(args.land_load))
 
 	normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-
+	"""
 	if args.vis_load:
 		if os.path.isfile(args.vis_load):
 			print("=> loading checkpoint '{}'".format(args.vis_load))
@@ -118,7 +119,7 @@ def main():
 		else:
 			print("=> no checkpoint found at '{}'".format(args.vis_load))
 
-
+	"""
 	if args.evaluate:
 		if os.path.isfile(args.save_file):
 			anchor_image = torch.utils.data.DataLoader(
@@ -129,12 +130,12 @@ def main():
 					normalize,
 				])),
 				batch_size = args.batch_size,
-				shuffle = True,
+				shuffle = False,
 				num_workers = args.workers,
 				pin_memory = pin,
 			)
 			print("Complete Data loading(%s)" % len(anchor_image))
-			validate(anchor_image, land_model, visual_model)
+			validate(anchor_image, land_model)#, visual_model)
 
 		else:
 			val_data = torch.utils.data.DataLoader(
@@ -145,17 +146,18 @@ def main():
 					normalize,
 				])),
 				batch_size=args.batch_size,
-				shuffle=True,
+				shuffle=False,
 				num_workers = args.workers,
 				pin_memory = pin,
 			)
 			print("Complete Data loading(%s)" % len(val_data))
 
-			validate(val_data, land_model, visual_model)
+			validate(val_data, land_model)#, visual_model)
 
 		return
 
-	#triplet data loading	
+	#triplet data loading
+	"""
 	triplet_train_data = torch.utils.data.DataLoader(
 		TripletFolder(data_path,transforms.Compose([
 			transforms.Scale(256),
@@ -168,7 +170,7 @@ def main():
 		num_workers = args.workers,
 		pin_memory = pin,
 	)
-
+	"""
 	print("Complete Data loading(%s)" % len(triplet_train_data))
 
 	params = filter(lambda p: p.requires_grad, visual_model.parameters())
@@ -193,40 +195,77 @@ def main():
 		#}, is_best)
 		},True)
 
-def validate(val_data, land_model, visual_model):
+def validate(val_data, land_model):#, visual_model):
+	land_model.eval()
+
 	if os.path.isfile(args.save_file):
-		pdist = nn.PairwiseDistance(p=2)
+		cos = nn.CosineSimilarity(dim=2)
 		results = pickle_load(args.save_file)
-		waistline_out = Variable(torch.Tensor(args.batch_size,4).fill_(-0.1)).cuda()
-		visual_model.eval()
-		land_model.eval()
+		#waistline_out = Variable(torch.Tensor(args.batch_size,4).fill_(-0.1),volatile = True).cuda()
+		#visual_model.eval()
 		while True:
 			anchor_path = input("PATH: ")
 			if anchor_path == "q":
 				break
 			else:
-				for i, (path, image,collar,sleeve,waistline,hem) in enumerate(val_data):				
-#for image in anchor_image:
-					input_var = Variable(image)
+				for i, (path, image, landmarks) in enumerate(val_data):				
+					#for image in anchor_image:
+					input_var = Variable(image,volatile = True)
+					centroid = torch.DoubleTensor(get_centroid(landmarks))
+					landmarks[:,8:10] = centroid
+					_,_,_, feature = land_model(input_var)
 
-					collar = Variable(collar).float().cuda(async=True)
-					sleeve = Variable(sleeve).float().cuda(async=True)
-					waistline = Variable(waistline).float().cuda(async=True)
-					hem = Variable(hem).float().cuda(async=True)
+					feature_vec = get_feature_vector(landmarks, feature)
+					feature_var = Variable(torch.Tensor(feature_vec).cuda(),volatile = True) # for 1036_train.pickle
 
-					collar_out, sleeve_out, hem_out, feature = land_model(input_var)
-					pool5_layer = gen_pool5_layer((collar[:,2:4], collar[:,4:6], sleeve[:,2:4], sleeve[:,4:6],waistline_out[:,0:2], waistline_out[:,2:4], hem[:,2:4], hem[:,4:6]), feature)
-					inferenced_anchor = visual_model(feature, pool5_layer)	
-					#inferenced_anchor = inferenced_anchor.data.cpu().tolist()[0]
+#isLandmark_inf = exist_landmark(feature_var[0]);
+#splited_inference = torch.split(feature_var,64, dim=1)
 					scores = []
+
 					for pathes, datas in results:
+						data_var = Variable(torch.Tensor(datas).cuda(),volatile=True)
+						r,c = data_var.size()
+						data_var = data_var.view(-1,8, int(c/8))
+						mask_data = data_var.ne(0).float()
+
+						splited_feature_var = feature_var.expand(r,c).contiguous().view(-1, 8, int(c/8))
+						mask_feature = splited_feature_var.ne(0).float()
+						
+						data_var = data_var * mask_feature
+						splited_feature_var = splited_feature_var * mask_data
+
+						similarities = cos(data_var, splited_feature_var)
+						zeros = torch.sum(similarities.gt(0).float(),1)	
+
+						max_score, max_index = torch.max(torch.sum(similarities,1),0)
+						scores.append((pathes[max_index.data[0]],max_score.data[0],zeros[max_index.data[0]].data[0]))
+
+
+					
+					top3 = sorted(scores, key = lambda x:x[1])
+					print(top3[-3:])
+					"""
 						for (path, data) in zip(pathes, datas):
-							data = torch.FloatTensor(data).cuda()
-							score = pdist(torch.unsqueeze(data,0),inferenced_anchor.data).cpu().tolist()[0][0]
-							scores.append((path,score))
+							l1 = []
+							l2 = []
+							data = Variable(torch.unsqueeze(torch.Tensor(data),0),volatile = True).cuda()
+							splited_data = torch.split(data,64,dim=1)
+							isLandmark_data = exist_landmark(data[0])
+							score = 0
+							for j in range(8):
+								if isLandmark_inf[j] + isLandmark_data[j] == 0:
+									l1.append(splited_data[j])
+									l2.append(splited_inference[j])
+
+							if len(l2) > 2:
+								score += cos(torch.cat(l1,dim=1),torch.cat(l2,dim=1)).data.tolist()[0] - (7 - len(l1)) * 0.005
+								scores.append((path,score,isLandmark_data))
+							score = cos(data,feature_var).data.tolist()[0]
+							scores.append((path,score,isLandmark_data))
 
 					top3 = sorted(scores, key = lambda x:x[1])
-					print(top3[:10])
+					print(top3[-10:])
+					"""
 	
 	else:
 		#rogress bar setting
@@ -234,24 +273,18 @@ def validate(val_data, land_model, visual_model):
 		imageN = len(val_data)*args.batch_size
 		printProgressBar(counter, imageN, prefix = 'Progress:', suffix = 'Complete', length = 100)
 
-		land_model.eval()
-		visual_model.eval()
-		waistline_out = Variable(torch.Tensor(args.batch_size,4).fill_(-0.1)).cuda()
 		with open(args.save_file,"wb") as fp:
-			for i, (path, image,collar,sleeve,waistline,hem) in enumerate(val_data):
-				input_var = Variable(image)
-				
-				collar = Variable(collar).float().cuda(async=True)
-				sleeve = Variable(sleeve).float().cuda(async=True)
-				waistline = Variable(waistline).float().cuda(async=True)
-				hem = Variable(hem).float().cuda(async=True)
+			for i, (path, image, landmarks) in enumerate(val_data):
+				input_var = Variable(image,volatile = True)
+				centroid = torch.DoubleTensor(get_centroid(landmarks))
+				landmarks[:,8:10] = centroid
 
-				collar_out, sleeve_out, hem_out, feature = land_model(input_var)
-				pool5_layer = gen_pool5_layer((collar[:,2:4], collar[:,4:6], sleeve[:,2:4], sleeve[:,4:6],
-												waistline_out[:,0:2], waistline_out[:,2:4], hem[:,2:4], hem[:,4:6]), feature)
-				output = visual_model(feature, pool5_layer)
-				pickle.dump((path,output.data.cpu().tolist()),fp,protocol=pickle.HIGHEST_PROTOCOL)
+				_,_,_, feature = land_model(input_var)
 
+				feature_vec = get_feature_vector(landmarks, feature)
+
+				#for LANDMARK DETECTOR
+				pickle.dump((path,feature_vec),fp,protocol=pickle.HIGHEST_PROTOCOL)
 				counter = counter + args.batch_size
 				printProgressBar(counter, imageN, prefix = 'Progress:', suffix = 'Complete', length = 100)	
 
@@ -265,6 +298,8 @@ def train(epoch, triplet_data, land_model, visual_model, triplet_loss, optimizer
 	visual_model.train()
 	waistline_out = Variable(torch.Tensor(args.batch_size,4).fill_(-0.1)).cuda()
 	for i, (anchor, anc_ans, positive, pos_ans, negative, neg_ans) in enumerate(triplet_data):
+		optimizer.zero_grad()
+
 		input_var = Variable(anchor)
 		collar_out, sleeve_out, hem_out, anchor_feature = land_model(input_var)
 #		anchor_pool5_layer = gen_pool5_layer((collar_out[:,0:2], collar_out[:,2:4], sleeve_out[:,0:2], sleeve_out[:,2:4],
@@ -272,6 +307,7 @@ def train(epoch, triplet_data, land_model, visual_model, triplet_loss, optimizer
 
 		ans = Variable(anc_ans).float().cuda(async=True)
 		pool5_layer = gen_pool5_layer((ans[:,2:4],ans[:,4:6],ans[:,8:10],ans[:,10:12],waistline_out[:,0:2], waistline_out[:,2:4],ans[:,14:16],ans[:,16:18]), anchor_feature)
+		MAC = gen_MAC(pool5_layer)
 		embedded_anchor = visual_model(anchor_feature, pool5_layer)
 
 		input_var = Variable(positive)
@@ -293,7 +329,6 @@ def train(epoch, triplet_data, land_model, visual_model, triplet_loss, optimizer
 
 		loss = triplet_loss(embedded_anchor, embedded_positive, embedded_negative)
 		
-		optimizer.zero_grad()
 		loss.backward()
 		optimizer.step()
 	
@@ -335,6 +370,36 @@ class AverageMeter(object):
 		self.count += n
 		self.avg = self.sum / self.count
 
+def exist_landmark(t):
+	isLandmark = []
+	for j in range(8):
+		if torch.mean(t.data[(j*64):(j*64+10)]) != 0:
+			isLandmark.append(0)
+		else:
+			isLandmark.append(1)
+
+	return isLandmark
+
+def get_centroid(landmarks):
+	centroids = []
+
+	for landmark in landmarks:
+		centroid = [0,0]
+		n_points = 0
+
+		for x,y in zip(landmark[0::2], landmark[1::2]):
+			if x != -0.1:
+				centroid[0] += x
+				centroid[1] += y
+				n_points += 1
+		if n_points > 0:
+			centroid[0] = centroid[0] / n_points
+			centroid[1] = centroid[1] / n_points
+		
+		centroids.append(centroid)
+
+	return centroids
+
 def adjust_learning_rate(optimizer, epoch):
 	"""Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
 	lr = args.lr * (0.1 ** (epoch // 30))
@@ -354,64 +419,49 @@ def accuracy(output, target, topk=(1,)):
 		res.append(correct_k.mul_(100.0 / batch_size))
 	return res
 
-def get_ROI(coord,feature_map):
-	"""Get Region of Interest(Landmark) by using landmark coordinations"""
-	pad = nn.ReflectionPad2d(2)
-	
-	f = pad(torch.unsqueeze(feature_map, 0))
-	x = math.floor(coord[0])
-	y = math.floor(coord[1])
-	
-	x_idx = Variable(torch.LongTensor([x+1,x+2,x+3,x+4]))
-	y_idx = Variable(torch.LongTensor([y+1,y+2,y+3,y+4]))
 
-	if args.cuda:
-		x_idx = x_idx.cuda() # 4x4 patch cut
-		y_idx = y_idx.cuda()
-
-	f = torch.index_select(f, 3, x_idx)
-	f = torch.index_select(f, 2, y_idx)
-	
-	return torch.squeeze(f)
-
-def gen_pool5_layer(coords, feature):
-	"""Generate pool5_layer map for training triplet network
-	coords: 8 visual results that consist of args.batch_size x 3
-	feature: args.batch_size x 512 x 28 x 28
+def get_feature_vector(coords,feature):
 	"""
-	if args.arch in ['resnet18','resnet34']:
-		filter_num = 128
-	else:
-		filter_num = 512
-
-	pool5_layer = 0 #Variable(torch.randn(8,512,4,4)).cuda()
+	1. Take off patches from the feature map at 8 landmark points
+	2. Stack the patches. ex) n x 512 x 32 x 32 -> n x 4096x 3 x 3
+	3. Find Maximum Activation of the patches n x 4096 
+	n = batch size
+	c = channel
+	m = map size
+	feature_vecs =  feature vectors of images that represent the images
 	
-	for i in range(len(feature)):
-		pool5 = 0 #Variable(torch.randn(512,4,4)).cuda()
-		
-		for j,coord in enumerate(coords):
-			#_, max_idx = torch.max(vis,1)
-			if coord[i].data[0] > 0 and coord[i].data[1] > 0 and coord[i].data[0] < 1 and coord[i].data[1] < 1:
-				f = get_ROI(coord[i].data * conv_size, feature[i])
+	feature = feature map from landmark model
+	coords = coordination of landmarks
+	"""
+	feature_vecs = []
+	n, c, m, _ = feature.size()
+	w = int(WINDOW_SIZE / 2)
+
+	# n x c x m x m
+	pad = nn.ReflectionPad2d(w)
+	feature = pad(feature).data
+
+	# n x c x (m + pad) x (m + pad)
+	for i, coord in enumerate(coords):
+		patches = []
+		for x,y in zip(coord[0::2],coord[1::2]):
+			if x >= 0 and x < 1 and y < 1:
+				x = math.floor(x * m)
+				y = math.floor(y * m)
+				patch = feature[i, :, x : x + WINDOW_SIZE , y : y + WINDOW_SIZE].contiguous()
+				_, a, b = patch.size()
+				#patch_vec, _ = torch.max(patch.view(c, a * b), 1)
+				patch_vec = patch.view(WINDOW_SIZE * WINDOW_SIZE * c)
+				# patch_vec = c
+				patches = patches + patch_vec.tolist()
+
 			else:
-				f = Variable(torch.zeros(filter_num,4,4)).cuda()
+				patches = patches + [0] * (WINDOW_SIZE * WINDOW_SIZE * c) # [0] * c
 
-			if j > 0:
-				pool5 = torch.cat((pool5, f), 0)
-			else:
-				pool5 = f
+		# patches = c * 8
+		feature_vecs.append(patches)
 
-		#Chunk and stack the pool5 > 8 x 512 x 4 x 4
-		pool5 = torch.stack(torch.split(pool5,filter_num,0),0)
-
-		if i > 0:
-			pool5_layer = torch.cat((pool5_layer, pool5), 0)
-		else:
-			pool5_layer = pool5
-
-	pool5_layer = torch.stack(torch.split(pool5_layer,8,0),0)
-
-	return pool5_layer
+	return feature_vecs
 
 def pickle_load(filename):
 	data = []

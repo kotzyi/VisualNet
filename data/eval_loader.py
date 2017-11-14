@@ -20,9 +20,9 @@ class EvalFolder(torch.utils.data.Dataset):
 		self.target_transform = target_transform
 		self.loader = loader
 #self.image_path = pd.read_table(root+'/Anno/list_landmarks_inshop.txt',sep="\s+")['image_name'].values.tolist()
-		self.image_path = pd.read_table(root+'/Anno/list_landmarks_val.txt',sep="\s+")['image_name'].values.tolist()
+		self.image_path = pd.read_table(root+'/Anno/0/list_landmarks_train_all.txt',sep="\s+")['image_name'].values.tolist()
 
-		self.data_vis_loc = pd.read_table(root+'/Anno/list_landmarks_val.txt',sep="\s+")[[
+		self.data_vis_loc = pd.read_table(root+'/Anno/0/list_landmarks_train_all.txt',sep="\s+")[[
 			'landmark_visibility_1','landmark_visibility_2','landmark_location_x_1','landmark_location_y_1','landmark_location_x_2','landmark_location_y_2',
 			'landmark_visibility_3','landmark_visibility_4','landmark_location_x_3','landmark_location_y_3','landmark_location_x_4','landmark_location_y_4',
 			'landmark_visibility_5','landmark_visibility_6','landmark_location_x_5','landmark_location_y_5','landmark_location_x_6','landmark_location_y_6',
@@ -58,18 +58,18 @@ class EvalFolder(torch.utils.data.Dataset):
 		path = self.image_path[index]
 		img = self.loader(self.root + path)
 		target = self.data_vis_loc[index]
-		empty = np.array([2.,2.,empty_value,empty_value,empty_value,empty_value])
+		empty = np.array([empty_value,empty_value,empty_value,empty_value])
 		mask = np.array([empty_value,empty_value])
 
-		collar = target[0:6]
-		sleeve = target[6:12]
-		hem = target[12:18]
+		collar = target[2:6]
+		sleeve = target[8:12]
+		hem = target[14:18]
 		waistline = empty
 
 		if self.transform is not None:
 			img = self.transform(img)
 		
-		return path, img, collar,sleeve,waistline,hem
+		return path, img, np.append(collar, [sleeve, waistline, hem])
 
 	def __len__(self):
 		return len(self.image_path)
