@@ -26,7 +26,7 @@ import pickle
 import sklearn.metrics.pairwise
 import scipy.spatial.distance
 
-IMG_SIZE = 256
+IMG_SIZE = 320
 WINDOW_SIZE = 3
 
 # Training settings
@@ -124,8 +124,8 @@ def main():
 		if os.path.isfile(args.save_file):
 			anchor_image = torch.utils.data.DataLoader(
 				EvalFolder(args.data,transforms.Compose([
-					transforms.Scale(256),
-					transforms.CenterCrop(256),
+					transforms.Scale(IMG_SIZE),
+					transforms.CenterCrop(IMG_SIZE),
 					transforms.ToTensor(),
 					normalize,
 				])),
@@ -140,8 +140,8 @@ def main():
 		else:
 			val_data = torch.utils.data.DataLoader(
 				EvalFolder(data_path,transforms.Compose([
-					transforms.Scale(256),
-					transforms.CenterCrop(256),
+					transforms.Scale(IMG_SIZE),
+					transforms.CenterCrop(IMG_SIZE),
 					transforms.ToTensor(),
 					normalize,
 				])),
@@ -243,7 +243,7 @@ def validate(val_data, land_model):#, visual_model):
 
 					
 					top3 = sorted(scores, key = lambda x:x[1])
-					print(top3[-3:])
+					print(top3[-10:])
 					"""
 						for (path, data) in zip(pathes, datas):
 							l1 = []
@@ -276,8 +276,8 @@ def validate(val_data, land_model):#, visual_model):
 		with open(args.save_file,"wb") as fp:
 			for i, (path, image, landmarks) in enumerate(val_data):
 				input_var = Variable(image,volatile = True)
-				centroid = torch.DoubleTensor(get_centroid(landmarks))
-				landmarks[:,8:10] = centroid
+				#centroid = torch.DoubleTensor(get_centroid(landmarks))
+				#landmarks[:,8:10] = centroid
 
 				_,_,_, feature = land_model(input_var)
 
@@ -450,15 +450,14 @@ def get_feature_vector(coords,feature):
 				y = math.floor(y * m)
 				patch = feature[i, :, x : x + WINDOW_SIZE , y : y + WINDOW_SIZE].contiguous()
 				_, a, b = patch.size()
-				#patch_vec, _ = torch.max(patch.view(c, a * b), 1)
-				patch_vec = patch.view(WINDOW_SIZE * WINDOW_SIZE * c)
-				# patch_vec = c
+				#patch_vec, _ = torch.max(patch.view(c, WINDOW_SIZE * WINDOW_SIZE), 1) # MAC
+				patch_vec = patch.view(WINDOW_SIZE * WINDOW_SIZE * c) # COS
 				patches = patches + patch_vec.tolist()
 
 			else:
-				patches = patches + [0] * (WINDOW_SIZE * WINDOW_SIZE * c) # [0] * c
+				#patches = patches + [0] * c # MAC
+				patches = patches + [0] * (WINDOW_SIZE * WINDOW_SIZE * c) # COS
 
-		# patches = c * 8
 		feature_vecs.append(patches)
 
 	return feature_vecs

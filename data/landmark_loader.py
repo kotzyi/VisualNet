@@ -88,24 +88,32 @@ class ImageFolder(data.Dataset):
 			waistline = target[12:18]
 			hem = target[18:24]
 
-		if collar[0] == 1:
+		if collar[0] != 0:
 			collar[2:4] = mask
-		if collar[1] == 1:
+			collar[0] = 1
+		if collar[1] != 0:
+			collar[1] = 1
 			collar[4:6] = mask
 
-		if sleeve[0] == 1:
+		if sleeve[0] != 0:
+			sleeve[0] = 1
 			sleeve[2:4] = mask
-		if sleeve[1] == 1:
+		if sleeve[1] != 0:
+			sleeve[1] = 1
 			sleeve[4:6] = mask
 
-		if waistline[0] == 1:
+		if waistline[0] != 0:
+			waistline[0] = 1
 			waistline[2:4] = mask
-		if waistline[1] == 1:
+		if waistline[1] != 0:
+			waistline[1] = 1
 			waistline[4:6] = mask
 
-		if hem[0] == 1:
+		if hem[0] != 0:
+			hem[0] = 1
 			hem[2:4] = mask
-		if hem[1] == 1:
+		if hem[1] != 0:
+			hem[1] = 1
 			hem[4:6] = mask
 
 		if self.transform is not None:

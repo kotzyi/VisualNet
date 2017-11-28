@@ -12,11 +12,16 @@ class LandmarkNet(nn.Module):
 
 		if architect in ['resnet18','resnet34','drn_22_d','drn_38_d','drn_54_d','drn_105_d']:
 			in_ch = 512
+			#in_ch = 1000
 		else:
 			in_ch = 2048
 
-		out_ch = 4096 #2048
+		out_ch = 4096 #4 #4096 #2048
 
+#self.landmark_collar = nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=1, padding=0, bias=True)
+#		self.landmark_sleeve = nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=1, padding=0, bias=True)
+#		self.landmark_waistline = nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=1, padding=0, bias=True)
+#		self.landmark_hem = nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=1, padding=0, bias=True)
 		self.landmark_collar = nn.Sequential(
 			nn.Linear(in_ch, out_ch),
 			nn.ReLU(True),
@@ -42,14 +47,13 @@ class LandmarkNet(nn.Module):
 			nn.Linear(out_ch,4),
 		)
 		self._initialize_weights()
-
 		# For Transfer Learning
 		self.features = nn.Sequential( # Must be changed when it's used for TripletTraining. 5->6 or 6->5 -> 4
-			*list(resnet.children())[:4]
+			*list(resnet.children())[:5]
 		)
 
 		self.conv5 = nn.Sequential( #Must be changed when it's used for triplet training. 5:9 -> 6:9  when DRN 5:9 -> 5:10 -> 4:10
-			*list(resnet.children())[4:10]
+			*list(resnet.children())[5:9]
 		)
 		#for param in self.features.parameters():
 		#			param.requires_grad = False
