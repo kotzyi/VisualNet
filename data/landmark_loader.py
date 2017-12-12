@@ -24,17 +24,18 @@ def default_loader(path):
 	return Image.open(path).convert('RGB')
 
 class ImageFolder(data.Dataset):
-	def __init__(self, root, is_train, clothes, transform = None, target_transform = None, loader = default_loader):
-		self.root = root
+	def __init__(self, params, transform = None, target_transform = None, loader = default_loader):
+		self.root = params['root']
+		self.is_train = params['isTrain']
+		self.clothes = params['clothes']
 		self.transform = transform
 		self.target_transform = target_transform
 		self.loader = loader
-		self.clothes = clothes
 
-		if is_train:
-			self.data_frame = pd.read_table(root+"/Anno/"+str(clothes)+"/list_landmarks_train_all.txt",sep="\s+")
+		if self.is_train:
+			self.data_frame = pd.read_table(self.root+"/Anno/"+str(self.clothes)+"/list_landmarks_train_all.txt",sep="\s+")
 		else:
-			self.data_frame = pd.read_table(root+"/Anno/"+str(clothes)+"/list_landmarks_test_all.txt",sep="\s+")
+			self.data_frame = pd.read_table(self.root+"/Anno/"+str(self.clothes)+"/list_landmarks_test_all.txt",sep="\s+")
 
 		self.image_path = self.data_frame['image_name'].values.tolist()
 		self.clothes_type = self.data_frame['clothes_type'].values.tolist()

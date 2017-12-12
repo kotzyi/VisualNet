@@ -21,13 +21,14 @@ from data.image_loader import AnchorFolder
 from data.eval_loader import EvalFolder
 from models.LandmarkNet import landmarknet
 from models.VisualNet import visualnet
+from models.Tuned_DRN import drn_d_38
 import math
 import pickle
 import sklearn.metrics.pairwise
 import scipy.spatial.distance
 
 IMG_SIZE = 320
-WINDOW_SIZE = 3
+WINDOW_SIZE = 4
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch Trainer for Triplet Loss of Rich Annotations')
@@ -86,6 +87,8 @@ def main():
 		print("CPU Mode")
 	
 	land_model = landmarknet(args.arch,args.clothes)
+	#land_model = drn_d_38(pretrained=True)
+	#land_model.fc = nn.Conv2d(512, 10, kernel_size=1, stride=1, padding=0, bias=True)
 #visual_model = visualnet(os.path.isfile(args.vis_load), args.arch,args.clothes)
 
 	if args.cuda:
@@ -101,7 +104,7 @@ def main():
 			print("=> loading checkpoint '{}'".format(args.land_load))
 			checkpoint = torch.load(args.land_load)
 			args.start_epoch = checkpoint['epoch']
-			args.clothes = checkpoint['clothes_type']
+			#args.clothes = checkpoint['clothes_type']
 			land_model.load_state_dict(checkpoint['state_dict'])
 			print("=> loaded checkpoint '{}' (epoch {})".format(args.land_load, checkpoint['epoch']))
 		else:
@@ -279,7 +282,7 @@ def validate(val_data, land_model):#, visual_model):
 				#centroid = torch.DoubleTensor(get_centroid(landmarks))
 				#landmarks[:,8:10] = centroid
 
-				_,_,_, feature = land_model(input_var)
+				_,_,_,feature = land_model(input_var)
 
 				feature_vec = get_feature_vector(landmarks, feature)
 
@@ -450,13 +453,13 @@ def get_feature_vector(coords,feature):
 				y = math.floor(y * m)
 				patch = feature[i, :, x : x + WINDOW_SIZE , y : y + WINDOW_SIZE].contiguous()
 				_, a, b = patch.size()
-				#patch_vec, _ = torch.max(patch.view(c, WINDOW_SIZE * WINDOW_SIZE), 1) # MAC
-				patch_vec = patch.view(WINDOW_SIZE * WINDOW_SIZE * c) # COS
+				patch_vec, _ = torch.max(patch.view(c, WINDOW_SIZE * WINDOW_SIZE), 1) # MAC
+				#patch_vec = patch.view(WINDOW_SIZE * WINDOW_SIZE * c) # COS
 				patches = patches + patch_vec.tolist()
 
 			else:
-				#patches = patches + [0] * c # MAC
-				patches = patches + [0] * (WINDOW_SIZE * WINDOW_SIZE * c) # COS
+				patches = patches + [0] * c # MAC
+				#patches = patches + [0] * (WINDOW_SIZE * WINDOW_SIZE * c) # COS
 
 		feature_vecs.append(patches)
 

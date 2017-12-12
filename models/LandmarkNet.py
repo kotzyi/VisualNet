@@ -94,25 +94,25 @@ class LandmarkNet(nn.Module):
 				m.weight.data.normal_(0, 0.01)
 				m.bias.data.zero_()
 
-def landmarknet(architect, types):
+def make_model(architect, types=0,pretrained=True):
 	if architect == 'resnet50':
-		model = LandmarkNet(architect, types, models.resnet50(pretrained=True))
+		model = LandmarkNet(architect, types, models.resnet50(pretrained=pretrained))
 	elif architect == 'resnet101':
-		model = LandmarkNet(architect, types, models.resnet101(pretrained=True))
+		model = LandmarkNet(architect, types, models.resnet101(pretrained=pretrained))
 	elif architect == 'resnet152':
-		model = LandmarkNet(architect, types, models.resnet152(pretrained=True))
+		model = LandmarkNet(architect, types, models.resnet152(pretrained=pretrained))
 	elif architect == 'resnet34':
-		model = LandmarkNet(architect, types, models.resnet34(pretrained=True))
+		model = LandmarkNet(architect, types, models.resnet34(pretrained=pretrained))
 	elif architect == 'drn_22_d':
-		model = LandmarkNet(architect, types, dilated_network.drn_d_22(pretrained=True))
+		model = LandmarkNet(architect, types, dilated_network.drn_d_22(pretrained=pretrained))
 	elif architect == 'drn_38_d':
-		model = LandmarkNet(architect, types, dilated_network.drn_d_38(pretrained=True))
+		model = LandmarkNet(architect, types, dilated_network.drn_d_38(pretrained=pretrained))
 	elif architect == 'drn_54_d':
-		model = LandmarkNet(architect, types, dilated_network.drn_d_54(pretrained=True))
+		model = LandmarkNet(architect, types, dilated_network.drn_d_54(pretrained=pretrained))
 	elif architect == 'drn_105_d':
-		model = LandmarkNet(architect, types, dilated_network.drn_d_105(pretrained=True))
+		model = LandmarkNet(architect, types, dilated_network.drn_d_105(pretrained=pretrained))
 	else:
-		model = LandmarkNet(architect, types, models.resnet18(pretrained=True))
+		model = LandmarkNet(architect, types, models.resnet18(pretrained=pretrained))
 
 	return model
 

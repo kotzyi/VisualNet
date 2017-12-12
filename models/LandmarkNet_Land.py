@@ -6,12 +6,10 @@ import math
 import models.DRN as dilated_network
 
 class LandmarkNet(nn.Module):
-	def __init__(self, architect, types, network):
+	def __init__(self, architect, network):
 		super(LandmarkNet, self).__init__()
-		self.types = types
 
 		if architect in ['resnet18','resnet34','drn_22_d','drn_38_d','drn_54_d','drn_105_d']:
-#in_ch = 512
 			in_ch = 512
 		else:
 			in_ch = 2048
@@ -57,25 +55,25 @@ class LandmarkNet(nn.Module):
 				m.weight.data.normal_(0, 0.01)
 				m.bias.data.zero_()
 
-def landmarknet_land(architect, types):
+def make_model(architect, pretrained = True):
 	if architect == 'resnet50':
-		model = LandmarkNet(architect, types, models.resnet50(pretrained=True))
+		model = LandmarkNet(architect, models.resnet50(pretrained=pretrained))
 	elif architect == 'resnet101':
-		model = LandmarkNet(architect, types, models.resnet101(pretrained=True))
+		model = LandmarkNet(architect, models.resnet101(pretrained=pretrained))
 	elif architect == 'resnet152':
-		model = LandmarkNet(architect, types, models.resnet152(pretrained=True))
+		model = LandmarkNet(architect, models.resnet152(pretrained=pretrained))
 	elif architect == 'resnet34':
-		model = LandmarkNet(architect, types, models.resnet34(pretrained=True))
+		model = LandmarkNet(architect, models.resnet34(pretrained=pretrained))
 	elif architect == 'drn_22_d':
-		model = LandmarkNet(architect, types, dilated_network.drn_d_22(pretrained=True))
+		model = LandmarkNet(architect, dilated_network.drn_d_22(pretrained=pretrained))
 	elif architect == 'drn_38_d':
-		model = LandmarkNet(architect, types, dilated_network.drn_d_38(pretrained=True))
+		model = LandmarkNet(architect, dilated_network.drn_d_38(pretrained=pretrained))
 	elif architect == 'drn_54_d':
-		model = LandmarkNet(architect, types, dilated_network.drn_d_54(pretrained=True))
+		model = LandmarkNet(architect, dilated_network.drn_d_54(pretrained=pretrained))
 	elif architect == 'drn_105_d':
-		model = LandmarkNet(architect, types, dilated_network.drn_d_105(pretrained=True))
+		model = LandmarkNet(architect, dilated_network.drn_d_105(pretrained=pretrained))
 	else:
-		model = LandmarkNet(architect, types, models.resnet18(pretrained=True))
+		model = LandmarkNet(architect, models.resnet18(pretrained=pretrained))
 
 	return model
 

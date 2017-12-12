@@ -1,217 +1,138 @@
-'''To-Do
-'''
+####################################################################################################################################
+####################################################################################################################################
+####################################################################################################################################
+### KT AI Commerce Team: Junyeop Lee.                                                                                            ###
+### Code Written in 12.12.17                                                                                                     ###
+### Description: This program is to purpose to test landmark detection of cloth by cam camera.                                   ###
+###              TCP/IP is the protocol of this program between server and clients.                                              ###
+###              The program is bascially loaded three different network models that are landmark model, visuality model.        ###
+###              Visuality model inferences which there is a landmark coord on image. Landmark Model inferences where the        ###
+###              landmark coordination on image. Another model can surely added to this code that you want.                      ###
+####################################################################################################################################
+####################################################################################################################################
+####################################################################################################################################
+
 
 from __future__ import print_function
 import argparse
 import os
 import sys
-import shutil
-import time
+import pickle
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import transforms
 from torch.autograd import Variable
-import torch.backends.cudnn as cudnn
-from data.image_loader import ImageFolder
-from models.VisualNet import visualnet
-import random
+from PIL import Image
+
+import utils.model_manage as MM
+import utils.communicate as comm
+import utils.data as DM
+
+TCP_IP = '10.214.35.36'
+TCP_PORT = 5005
+BUFFER_SIZE = 4096
+IMG_SIZE = 320
+WINDOW_SIZE = 3
+
 # Training settings
 parser = argparse.ArgumentParser(description='Visual Search')
-parser.add_argument('data', metavar = 'DIR',help = 'path to dataset')
-parser.add_argument('--batch-size', type=int, default=64, metavar='N',
-                    help='input batch size for training (default: 64)')
-parser.add_argument('--epochs', type=int, default=200, metavar='N',
-                    help='number of epochs to train (default: 100)')
-parser.add_argument('--start_epoch', type=int, default=1, metavar='N',
-                    help='number of start epoch (default: 1)')
-parser.add_argument('--lr', type=float, default=0.002, metavar='LR',
-                    help='learning rate (default: 0.002)')
-parser.add_argument('--no-cuda', action='store_true', default=False,
+parser.add_argument('-data', metavar = 'DIR',help = 'path to dataset')
+parser.add_argument('--cuda', action='store_true', default=True,
                     help='enables CUDA training')
-parser.add_argument('--resume', default='', type=str,
-                    help='path to latest checkpoint (default: none)')
-parser.add_argument('--workers', type = int, default = 8, metavar = 'N',
-					help='number of works for data londing')
-parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,	metavar='W', 
-					help='weight decay (default: 1e-4)')
-parser.add_argument('--print-freq', '-p', default=100, type=int,
-					metavar='N', help='print frequency (default: 100)')
-parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
-					help='evaluate model on validation set')
-parser.add_argument('-a', '--arch', default='resnet50', type=str,
-					help='Architecture of network for training in resnet18,34,50,101,152')
-parser.add_argument('-c', '--clothes', default=0, type=int,
-					help='Clothes type:0 - upper body, 1 - lower body, 2 - full body')
+parser.add_argument('-l','--land', nargs='+',default = [],
+                    help='model file name, architecture, and path to latest checkpoint (ex: -l LandmarkNet_Land.py drn_38_d save/landmark/checkpoint.pth.tar)')
+parser.add_argument('-v','--visuality', nargs='+',default = [],
+					help='model file name, architecture, and path to latest checkpoint (ex: -v Landmakr_Vis.py resnet50 save/visuality/checkpoint.pth.tar)')
+parser.add_argument('-a','--attribute', nargs='+',default = [],
+					help='model file name, architecture, and path to latest checkpoint (ex: -a resnet.py resnet34 save/attribute/checkpoint.pth.tar)')
+parser.add_argument('-f','--feature', nargs='+',default = [],
+					help='model file name, architecture, and path to latest checkpoint (ex: -a resnet.py resnet34 save/attribute/checkpoint.pth.tar)')
+parser.add_argument('-c','--category', nargs='+',default = [],
+					help='model file name, architecture, and path to latest checkpoint (ex: -a resnet.py resnet34 save/attribute/checkpoint.pth.tar)')
+
+
+trans = transforms.Compose([
+	transforms.Scale(IMG_SIZE),
+	transforms.CenterCrop(IMG_SIZE),
+	transforms.ToTensor(),
+	transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
+
 
 def main():
 	#기본 설정 부분
 	global args, best_acc
 	args = parser.parse_args()
-	data_path = args.data
-	args.cuda = not args.no_cuda and torch.cuda.is_available()
-	torch.manual_seed(random.randint(1, 10000))
-	pin = True
-	best_dist = 100.0
+
+	landmark_params = args.land
+	visuality_params = args.visuality
+	attribute_params = args.attribute
+
+	cuda = args.cuda and torch.cuda.is_available()
 
 	if args.cuda:
 		print("GPU Mode")
-		torch.cuda.manual_seed(random.randint(1, 10000))
 	else:
-		pin = False
 		print("CPU Mode")
-	
-	model = visualnet(args.arch, args.clothes)
-	if args.cuda:
-		model = torch.nn.DataParallel(model).cuda()
 
-	# optionally resume from a checkpoint
-	if args.resume:
-		if os.path.isfile(args.resume):
-			print("=> loading checkpoint '{}'".format(args.resume))
-			checkpoint = torch.load(args.resume)
-			args.start_epoch = checkpoint['epoch']
-			args.clothes = checkpoint['clothes_type']
-			model.load_state_dict(checkpoint['state_dict'])
-			print("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
-		else:
-			print("=> no checkpoint found at '{}'".format(args.resume))
+	models = MM.Model_Manage()
+	#Landmark Models Load
+	if args.land:
+		land_model = models.add(landmark_params[0:2])
+		land_model, _ = models.chkpoint_load(land_model, ['epoch'], landmark_params[-1])
+		if land_model is not None:
+			land_model.eval()
 
-	normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-	
-	val_data = torch.utils.data.DataLoader(
-		ImageFolder(data_path,transforms.Compose([
-			transforms.Scale(256),
-			transforms.CenterCrop(256),
-			transforms.ToTensor(),
-			normalize,
-		])),
-		batch_size = args.batch_size,
-		shuffle = True,
-		num_workers = args.workers,
-		pin_memory = pin,
-	)
+	#Visuality Models Load
+	if args.visuality:
+		visual_model = models.add(visuality_params[0:2])
+		visual_model, _ = models.chkpoint_load(visual_model, ['epoch'], visuality_params[-1])
+		if visual_model is not None:
+			visual_model.eval()
 
-	print("Complete Validation Data loading(%s)" % len(val_data))
+	#Attribute Models Load
+	if args.attribute:
+		attr_model = models.add(attribute_params[0:2])
+		attr_model, _ = models.chkpoint_load(attr_model, ['epoch'], attribute_params[-1])
+		if attr_model is not None:
+			attr_model.eval()
 
-	if args.evaluate:
-		validate(val_data, model, args.clothes)
-		return
+	#Feature Models Load
+	if args.feature:
+		feature_model = models.add(feature_params[0:2])
+		feature_model, _ = models.chkpoint_load(feature_model, ['epoch'], feature_params[-1])
+		if feature_model is not None:
+			feature_model.eval()
 
-def validate(val_loader, model, clothes_type):
-	batch_time = AverageMeter()
-	data_time = AverageMeter()
-	distance = AverageMeter()
-    
-	model.eval()
-	end = time.time()
-
-	if clothes_type == 0:
-		for i, (input, path) in enumerate(val_loader):
-			data_time.update(time.time() - end)
-			input_var = Variable(input)
-
-			# compute output
-			collar_out, sleeve_out, hem_out, _ = model(input_var)
-
-	        # Answers
-			collar = Variable(collar).float().cuda(async=True)
-			sleeve = Variable(sleeve).float().cuda(async=True)
-			hem = Variable(hem).float().cuda(async=True)
-			dist = accuracy((collar[:,2:6],sleeve[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,hem_out))
-			distance.update(dist.data[0], 1)
-			print(path[0],sleeve[0],sleeve_out[0])
-			batch_time.update(time.time() - end)
-			end = time.time()
-
-			if i % args.print_freq == 0:
-				print('Epoch: [{0}/{1}]\t'
-						'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-						'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-						'Distances {dist.val:.4f} ({dist.avg:.4f})'.format(i, len(val_loader), batch_time=batch_time,data_time=data_time, dist = distance))
-
-	elif clothes_type == 1:
-		for i, (input, waistline, hem, path) in enumerate(val_loader):
-			data_time.update(time.time() - end)
-			input_var = Variable(input)
-			
-			waistline_out, hem_out, _ = model(input_var)
-			waistline = Variable(waistline).float().cuda(async=True)
-			hem = Variable(hem).float().cuda(async=True)
-			print(path[0],waistline[0],waistline_out[0])
-			dist = accuracy((waistline[:,2:6],hem[:,2:6]),(waistline_out,hem_out))
-			distance.update(dist.data[0], 1)
-
-			batch_time.update(time.time() - end)
-			end = time.time()
-
-			if i % args.print_freq == 0:
-				print('Epoch: [{0}/{1}]\t'
-					'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-					'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-					'Distances {dist.val:.4f} ({dist.avg:.4f})'.format(i, len(val_loader), batch_time=batch_time,data_time=data_time, dist = distance))
-
-	else:
-		for i, (input, collar, sleeve, waistline, hem, path) in enumerate(val_loader):
-			# measure data loading time
-			data_time.update(time.time() - end)
-			input_var = Variable(input)
-			# compute output
-			collar_out, sleeve_out, waistline_out, hem_out, _ = model(input_var)
-
-			# Answers
-			collar = Variable(collar).float().cuda(async=True)
-			sleeve = Variable(sleeve).float().cuda(async=True)
-			waistline = Variable(waistline).float().cuda(async=True)
-			hem = Variable(hem).float().cuda(async=True)
-
-			dist = accuracy((collar[:,2:6],sleeve[:,2:6],waistline[:,2:6],hem[:,2:6]),(collar_out,sleeve_out,waistline_out,hem_out))
-			distance.update(dist.data[0], 1)
-		
-
-			# measure elapsed time
-			batch_time.update(time.time() - end)
-			end = time.time()
-
-			if i % args.print_freq == 0:
-				print('Epoch: [{0}/{1}]\t'
-					'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-					'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-					'Distances {dist.val:.4f} ({dist.avg:.4f})'.format(i, len(val_loader), batch_time=batch_time,data_time=data_time, dist = distance))
-	
-	print('Test Result: Distances ({dist.avg:.4f})'.format(dist = distance))
-	return distance.avg
+	#Category Models Load
+	if args.category:
+		category_model = models.add(cagetory_params[0:2])
+		category_model, _ = models.chkpoint_load(cagetory_model, ['epoch'], category_params[-1])
+		if category_model is not None:
+			category_model.eval()
 
 
-class AverageMeter(object):
-	"""Computes and stores the average and current value"""
-	def __init__(self):
-		self.reset()
-	def reset(self):
-		self.val = 0
-		self.avg = 0
-		self.sum = 0
-		self.count = 0
-	def update(self, val, n=1):
-		self.val = val
-		self.sum += val * n
-		self.count += n
-		self.avg = self.sum / self.count
+	#Connect with local for feature detection
+	addr = ('0.0.0.0',0)
+	connection = comm.Communicate(TCP_IP,TCP_PORT)
+	connection.listen()
 
+	while True:
+		frame, addr = connection.receive(addr)
+		input = Image.fromarray(frame)
+		input_tensor = torch.unsqueeze(trans(input),0)
+		input_var = Variable(input_tensor,volatile =True).cuda()
 
-def accuracy(target,output):
-	"""Computes the precision@k for distances of the landmarks"""
-	dist_function = nn.PairwiseDistance(p=1)
-	
-	distances = dist_function(torch.cat(target,1),torch.cat(output,1))
-	
-	if args.clothes == 0:
-		return distances.mean() /12
-	elif args.clothes == 1:
-		return distances.mean() / 8
-	else:
-		return distances.mean() / 16
+		landmark  = land_model(input_var).data.tolist()[0]
+		visuality = visual_model(input_var).data.tolist()[0]
+										
+		coords = set_coords(landmark,visuality)
+		coords=pickle.dumps(coords)
+		connection.send(addr, coords)
+
+	return
+
 
 if __name__ == '__main__':
 	main()    
