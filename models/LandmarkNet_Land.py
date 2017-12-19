@@ -9,32 +9,39 @@ class LandmarkNet(nn.Module):
 	def __init__(self, architect, network):
 		super(LandmarkNet, self).__init__()
 
-		if architect in ['resnet18','resnet34','drn_22_d','drn_38_d','drn_54_d','drn_105_d']:
+		if architect in ['resnet18','resnet34','drn_26_c','drn_22_d','drn_38_d','drn_54_d','drn_105_d']:
 			in_ch = 512
+			hidden = 1024
 		else:
 			in_ch = 2048
 
+		self.fc = nn.Sequential(
+			nn.Conv2d(in_ch, hidden, kernel_size=1, stride=1, padding=0, bias=True),
+			nn.ReLU(True),
+			nn.Dropout(),
+			nn.Conv2d(hidden,hidden, kernel_size=1, stride=1, padding=0, bias=True),
+			nn.ReLU(True),
+			nn.Dropout(),
+			nn.Conv2d(hidden,hidden, kernel_size=1, stride=1, padding=0, bias=True),
+			nn.ReLU(True),
+			nn.Dropout(),
+			nn.Conv2d(hidden, 16, kernel_size=1, stride=1, padding=0, bias=True),
+		)
+		self.remain = nn.Sequential(
+			nn.AvgPool2d (kernel_size=40, stride=40, padding=0, ceil_mode=False, count_include_pad=True),
+		)
+		
+
+		#self._initialize_weights()
+
 		# For Transfer Learning
 		self.features = nn.Sequential( # Must be changed when it's used for TripletTraining. 5->6 or 6->5 -> 4
-			*list(network.children())[:-1]
-		)
-		self.fc = nn.Sequential(
-			nn.Conv2d(in_ch, in_ch, kernel_size=1, stride=1, padding=0, bias=True),
-			nn.ReLU(True),
-			nn.Dropout(),
-			nn.Conv2d(in_ch, in_ch, kernel_size=1, stride=1, padding=0, bias=True),
-			nn.ReLU(True),
-			nn.Dropout(),
-			nn.Conv2d(in_ch, in_ch, kernel_size=1, stride=1, padding=0, bias=True),
-			nn.ReLU(True),
-			nn.Dropout(),
-			nn.Conv2d(in_ch, 16, kernel_size=1, stride=1, padding=0, bias=True),
+			*list(network.children())[:-2]
 		)
 
-		#for param in self.features.parameters():
-		#			param.requires_grad = False
 	def forward(self, x):
-		x = self.features(x)
+		x  = self.features(x)
+		x = self.remain(x)
 		x = self.fc(x)
 		x = x.view(x.size(0), -1)
 
@@ -64,6 +71,8 @@ def make_model(architect, pretrained = True):
 		model = LandmarkNet(architect, models.resnet152(pretrained=pretrained))
 	elif architect == 'resnet34':
 		model = LandmarkNet(architect, models.resnet34(pretrained=pretrained))
+	elif architect == 'drn_26_c':
+		model = LandmarkNet(architect, dilated_network.drn_c_26(pretrained=pretrained))
 	elif architect == 'drn_22_d':
 		model = LandmarkNet(architect, dilated_network.drn_d_22(pretrained=pretrained))
 	elif architect == 'drn_38_d':

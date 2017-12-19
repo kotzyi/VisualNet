@@ -27,7 +27,8 @@ from PIL import Image
 
 import utils.model_manage as MM
 import utils.communicate as comm
-import utils.data as DM
+import utils.data_manage as DM
+import utils.utility as utility
 
 TCP_IP = '10.214.35.36'
 TCP_PORT = 5005
@@ -47,9 +48,9 @@ parser.add_argument('-v','--visuality', nargs='+',default = [],
 parser.add_argument('-a','--attribute', nargs='+',default = [],
 					help='model file name, architecture, and path to latest checkpoint (ex: -a resnet.py resnet34 save/attribute/checkpoint.pth.tar)')
 parser.add_argument('-f','--feature', nargs='+',default = [],
-					help='model file name, architecture, and path to latest checkpoint (ex: -a resnet.py resnet34 save/attribute/checkpoint.pth.tar)')
+					help='model file name, architecture, and path to latest checkpoint (ex: -f resnet.py resnet34 save/attribute/checkpoint.pth.tar)')
 parser.add_argument('-c','--category', nargs='+',default = [],
-					help='model file name, architecture, and path to latest checkpoint (ex: -a resnet.py resnet34 save/attribute/checkpoint.pth.tar)')
+					help='model file name, architecture, and path to latest checkpoint (ex: -c resnet.py resnet34 save/attribute/checkpoint.pth.tar)')
 
 
 trans = transforms.Compose([
@@ -68,6 +69,7 @@ def main():
 	landmark_params = args.land
 	visuality_params = args.visuality
 	attribute_params = args.attribute
+	category_params = args.category
 
 	cuda = args.cuda and torch.cuda.is_available()
 
@@ -107,8 +109,10 @@ def main():
 
 	#Category Models Load
 	if args.category:
-		category_model = models.add(cagetory_params[0:2])
-		category_model, _ = models.chkpoint_load(cagetory_model, ['epoch'], category_params[-1])
+		category_model = models.add(category_params[0:2])
+		category_model, _ = models.chkpoint_load(category_model, ['epoch'], category_params[-1])
+		cat_class = utility.cat_class
+		attr_class = utility.attr_class
 		if category_model is not None:
 			category_model.eval()
 
@@ -125,10 +129,19 @@ def main():
 		input_var = Variable(input_tensor,volatile =True).cuda()
 
 		landmark  = land_model(input_var).data.tolist()[0]
-		visuality = visual_model(input_var).data.tolist()[0]
-										
-		coords = set_coords(landmark,visuality)
-		coords=pickle.dumps(coords)
+		#visuality = visual_model(input_var).data.tolist()[0]
+		_,attribute,category = category_model(input_var)
+		_,attr = torch.topk(attribute.data,3,1)
+		_,cat = torch.topk(category.data,5,1)
+		attr = attr[0,:]
+		cat = cat[0,:]
+		
+		print("Attr:",attr_class[attr[0]],attr_class[attr[1]],attr_class[attr[2]])
+		print("Category:",cat_class[cat[0]],cat_class[cat[1]],cat_class[cat[2]],cat_class[cat[3]],cat_class[cat[4]])
+
+		coords = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+		#coords = set_coords(landmark,visuality)
+		coords=pickle.dumps(landmark)
 		connection.send(addr, coords)
 
 	return

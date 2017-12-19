@@ -26,7 +26,7 @@ def default_loader(path):
 class ImageFolder(data.Dataset):
 	def __init__(self, params, transform = None, target_transform = None, loader = default_loader):
 		self.root = params['root']
-		self.is_train = params['isTrain']
+		self.is_train = params['is_train']
 		self.clothes = params['clothes']
 		self.transform = transform
 		self.target_transform = target_transform
