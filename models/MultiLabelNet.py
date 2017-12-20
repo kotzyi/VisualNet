@@ -41,10 +41,10 @@ class LandmarkNet(nn.Module):
 				*list(resnet.children())[:7]
 			)"""
 			self.features = nn.Sequential(
-				*list(resnet.children())[:8]
+				*list(resnet.children())[:5]
 			)
 			self.remain = nn.Sequential(
-				*list(resnet.children())[8:9]
+				*list(resnet.children())[5:9]
 			)
 			#self.remain= nn.AvgPool2d (kernel_size=10, stride=10, padding=0, ceil_mode=False, count_include_pad=True)
 		else:

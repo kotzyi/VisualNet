@@ -33,7 +33,7 @@ def train(train_loader, model, criterions, optimizer, epoch, print_freq):
         target = torch.Tensor(target).gt(0)
         target = target.float().cuda(async=True)
         category = category.cuda(async=True)
-        weight = torch.add(torch.mul(target*att_weight,W),4)
+        weight = torch.add(torch.mul(target*att_weight,W),2)
         input_var = Variable(input).cuda(async=True)
         target_var = Variable(target)
 
@@ -50,7 +50,7 @@ def train(train_loader, model, criterions, optimizer, epoch, print_freq):
         #category loss and accuracy
         cat_weight = torch.FloatTensor(utility.cat_weight).cuda(async=True)
         criterions[1].weight = cat_weight
-        cat_loss = criterions[1](cat_output, category_var) *0.1
+        cat_loss = criterions[1](cat_output, category_var) * 0.1
 
         acc, _ = utility.accuracy(cat_output.data, category, topk=(1, 1))
 

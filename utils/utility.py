@@ -182,8 +182,8 @@ def f1_score(output,target):
     tp = torch.sum(torch.add(target,output).eq(2))
     fp = torch.sum(torch.add(target,torch.neg(output)).eq(-1))
     fn = torch.sum(torch.add(torch.neg(target),output).eq(-1))
-    re = tp/(tp+fn)
-    pr = tp/(tp+fp)
+    re = tp/(tp+fn+0.0000000001)
+    pr = tp/(tp+fp+0.0000000001)
     return 2*(re*pr/(re+pr+0.000001)), pr, re 
 
 def get_n_classes(path):
